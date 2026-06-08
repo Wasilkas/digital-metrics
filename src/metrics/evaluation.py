@@ -228,6 +228,20 @@ class Evaluation:
                 f"No ground-truth rows found for calibration split {calibration_split!r}. "
                 f"Available splits: {available}"
             )
+
+        assert self.gt_df is not None
+        overlap = set(cal_gt["image_name"]) & set(self.gt_df["image_name"])
+        if overlap:
+            sample = sorted(overlap)[:5]
+            raise ValueError(
+                f"Calibration split {calibration_split!r} shares "
+                f"{len(overlap)} image_name(s) with the evaluation split "
+                f"(e.g. {sample}). Predictions are matched to ground truth via "
+                "image_name, so overlapping images would leak calibration data "
+                "into the evaluation. Fix the 'split' labels in split_df so each "
+                "image_name belongs to exactly one split."
+            )
+
         logger.info(
             f"Calibrating confidence thresholds on '{calibration_split}' split "
             f"({len(cal_gt)} GT rows)..."

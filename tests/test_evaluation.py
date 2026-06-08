@@ -165,3 +165,22 @@ def test_calibration_split_no_split_column_raises(
     ev = Evaluation(preds_df, gt_no_split, iou_threshold=0.5)
     with pytest.raises(ValueError, match="'split' column"):
         ev(split="all", calibration_split="val")
+
+
+def test_calibration_split_overlap_raises(
+    split_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    """calibration_split raises ValueError when an image_name appears in both
+    the calibration split and the evaluation split — predictions are joined to
+    GT via image_name, so overlap would leak calibration data into evaluation."""
+    gt_df, preds_df = split_dataset
+
+    # Duplicate img3's GT rows but mislabel the copies as "val": img3 now
+    # appears in both "val" and "test" — a data-integrity bug to guard against.
+    leaked_rows = gt_df[gt_df["image_name"] == "img3"].copy()
+    leaked_rows["split"] = "val"
+    leaked_gt = pd.concat([gt_df, leaked_rows], ignore_index=True)
+
+    ev = Evaluation(preds_df, leaked_gt, iou_threshold=0.5)
+    with pytest.raises(ValueError, match="shares"):
+        ev(split="test", calibration_split="val")
