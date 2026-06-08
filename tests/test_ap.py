@@ -99,3 +99,27 @@ def test_compute_map_all_fp() -> None:
     metrics: dict[str, Metrics] = {"cat": Metrics()}
     compute_map(gt, preds, metrics)
     assert metrics["cat"].ap50 == pytest.approx(0.0, abs=1e-6)
+
+
+def test_compute_map_class_absent_from_split_is_nan() -> None:
+    """A class with zero GT instances in this split must be NaN, not 0.0.
+
+    Evaluation.metrics is keyed by all classes in split_df (across every
+    split), but compute_map only scores classes present in the *current*
+    split's GT. Classes absent here were never evaluated for AP — reporting
+    0.0 would silently drag down a class-averaged mAP (nanmean must skip them
+    to match how YOLO reports mAP50: mean only over classes seen in val).
+    """
+    gt, preds = _make_perfect_dataset()
+    # "dog" never appears in gt — simulates a class present in split_df overall
+    # (e.g. only in train/test) but absent from this evaluation split.
+    metrics: dict[str, Metrics] = {"cat": Metrics(), "dog": Metrics()}
+    compute_map(gt, preds, metrics)
+
+    assert metrics["cat"].ap50 == pytest.approx(1.0, abs=1e-6)
+    assert np.isnan(metrics["dog"].ap50)
+    assert np.isnan(metrics["dog"].ap75)
+    assert np.isnan(metrics["dog"].ap50_95)
+
+    # nanmean over all classes must equal the score of the evaluated class only
+    assert np.nanmean([metrics["cat"].ap50, metrics["dog"].ap50]) == pytest.approx(1.0)

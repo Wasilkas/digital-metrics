@@ -45,7 +45,8 @@ def compute_map(
         metrics: Dict of Metrics objects; ap50/ap75/ap50_95 are set in place.
     """
     x1, y1, x2, y2 = "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"
-    classes = sorted(gt_df["instance_label"].unique().tolist())
+    classes_in_split = set(gt_df["instance_label"].unique().tolist())
+    classes = sorted(classes_in_split)
     npos_by_class = gt_df.groupby("instance_label").size().to_dict()
 
     ap_per_class: dict[str, dict[float, float]] = {
@@ -106,3 +107,12 @@ def compute_map(
             metrics[c].ap50 = ap_per_class[c][0.5]
             metrics[c].ap75 = ap_per_class[c][0.75]
             metrics[c].ap50_95 = float(np.nanmean(list(ap_per_class[c].values())))
+
+    # Classes with no GT instances in this split were never scored for AP.
+    # Report NaN (not the 0.0 default) so a class-averaged mAP correctly
+    # excludes them via nanmean — matching how YOLO reports mAP50.
+    for c, m in metrics.items():
+        if c not in classes_in_split:
+            m.ap50 = float("nan")
+            m.ap75 = float("nan")
+            m.ap50_95 = float("nan")
