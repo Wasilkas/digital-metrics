@@ -101,6 +101,59 @@ def test_compute_map_all_fp() -> None:
     assert metrics["cat"].ap50 == pytest.approx(0.0, abs=1e-6)
 
 
+def test_compute_map_ignores_predictions_outside_split() -> None:
+    """Predictions for images outside gt_df must not be scored as FP.
+
+    Real workflows often run inference once over the whole dataset, so
+    preds_df may contain rows for train/test images while gt_df is scoped
+    to e.g. "val". Those foreign predictions must be dropped before scoring,
+    not counted as false positives (which would crater AP) nor interleaved
+    into the confidence-sorted precision-recall curve.
+    """
+    cols_gt = [
+        "image_name",
+        "instance_label",
+        "bbox_x_tl",
+        "bbox_y_tl",
+        "bbox_x_br",
+        "bbox_y_br",
+        "split",
+    ]
+    # Only "img1" belongs to the evaluated split; "img_other" does not appear
+    # in gt_df at all (e.g. it's a train/test image).
+    gt = pd.DataFrame(
+        [("img1", "cat", 0, 0, 100, 100, "val")],
+        columns=cols_gt,
+    )
+    cols_p = [
+        "image_name",
+        "instance_label",
+        "bbox_x_tl",
+        "bbox_y_tl",
+        "bbox_x_br",
+        "bbox_y_br",
+        "confidence",
+    ]
+    preds = pd.DataFrame(
+        [
+            ("img1", "cat", 0, 0, 100, 100, 0.99),  # perfect match → TP
+            # Foreign predictions for an image outside this split, at very
+            # high confidence so they would dominate a confidence-sorted
+            # cumulative curve and would be marked FP if not filtered out.
+            ("img_other", "cat", 10, 10, 110, 110, 0.999),
+            ("img_other", "cat", 200, 200, 300, 300, 0.998),
+        ],
+        columns=cols_p,
+    )
+    metrics: dict[str, Metrics] = {"cat": Metrics()}
+    compute_map(gt, preds, metrics)
+
+    # A single TP and nothing else in-split → perfect AP, unaffected by the
+    # foreign high-confidence predictions for img_other.
+    assert metrics["cat"].ap50 == pytest.approx(1.0, abs=1e-6)
+    assert metrics["cat"].ap75 == pytest.approx(1.0, abs=1e-6)
+
+
 def test_compute_map_class_absent_from_split_is_nan() -> None:
     """A class with zero GT instances in this split must be NaN, not 0.0.
 

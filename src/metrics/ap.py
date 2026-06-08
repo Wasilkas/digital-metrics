@@ -41,10 +41,22 @@ def compute_map(
 
     Args:
         gt_df: Ground-truth DataFrame (current split).
-        preds_df: Full predictions DataFrame (not confidence-filtered).
+        preds_df: Full predictions DataFrame (not confidence-filtered). May
+            contain predictions for images outside the current split (e.g.
+            inference was run once over the whole dataset) — these are
+            dropped before scoring so they cannot count as false positives
+            against this split.
         metrics: Dict of Metrics objects; ap50/ap75/ap50_95 are set in place.
     """
     x1, y1, x2, y2 = "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"
+
+    # Scope predictions to images that actually belong to this split. Without
+    # this, predictions for train/test images would be scored as FPs here
+    # (and interleaved into the confidence-sorted P-R curve), inflating FP
+    # counts and crushing AP relative to a properly split-scoped computation.
+    split_images = gt_df["image_name"].unique()
+    preds_df = preds_df[preds_df["image_name"].isin(split_images)]
+
     classes_in_split = set(gt_df["instance_label"].unique().tolist())
     classes = sorted(classes_in_split)
     npos_by_class = gt_df.groupby("instance_label").size().to_dict()
