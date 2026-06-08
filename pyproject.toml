@@ -14,10 +14,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-[project.urls]
-Homepage = "https://github.com/Wasilkas/digital-metrics"
-Repository = "https://github.com/Wasilkas/digital-metrics"
-
 dependencies = [
     "pandas>=2.0",
     "numpy>=1.24",
@@ -30,6 +26,10 @@ dependencies = [
     "tqdm>=4.65",
     "openpyxl>=3.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Wasilkas/digital-metrics"
+Repository = "https://github.com/Wasilkas/digital-metrics"
 
 [build-system]
 requires = ["hatchling"]
