@@ -176,3 +176,47 @@ def test_compute_map_class_absent_from_split_is_nan() -> None:
 
     # nanmean over all classes must equal the score of the evaluated class only
     assert np.nanmean([metrics["cat"].ap50, metrics["dog"].ap50]) == pytest.approx(1.0)
+
+
+def test_compute_map_empty_images_count_as_fp() -> None:
+    """Predictions on empty split images (no GT at all) must be counted as FP.
+
+    Without split_image_names, empty images are invisible (they have no rows
+    in gt_df) so their predictions are silently dropped, inflating AP.
+    With split_image_names the detections on empty images must be counted as
+    FPs and AP must fall below 1.0.
+
+    The FP must be the *highest*-confidence prediction so it appears first in
+    the confidence-sorted curve and genuinely lowers AP.  A low-confidence FP
+    ranked after the TP cannot lower AP because recall is already at its max.
+    """
+    cols_gt = [
+        "image_name", "instance_label",
+        "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "split",
+    ]
+    gt = pd.DataFrame(
+        [("img1", "cat", 0, 0, 100, 100, "val")],
+        columns=cols_gt,
+    )
+    cols_p = [
+        "image_name", "instance_label",
+        "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "confidence",
+    ]
+    preds = pd.DataFrame(
+        [
+            # FP first in confidence ranking so it sits before the TP on the P-R curve.
+            ("img_empty", "cat", 10, 10, 110, 110, 0.99),  # FP — empty image, high conf
+            ("img1", "cat", 0, 0, 100, 100, 0.50),         # TP — annotated image, lower conf
+        ],
+        columns=cols_p,
+    )
+
+    # Without split_image_names: img_empty is invisible, only TP is scored → AP = 1.0 (wrong).
+    metrics_no_empty: dict[str, Metrics] = {"cat": Metrics()}
+    compute_map(gt, preds, metrics_no_empty)
+    assert metrics_no_empty["cat"].ap50 == pytest.approx(1.0, abs=1e-6)
+
+    # With split_image_names: the high-confidence FP on img_empty is counted → AP = 0.5.
+    metrics_with_empty: dict[str, Metrics] = {"cat": Metrics()}
+    compute_map(gt, preds, metrics_with_empty, split_image_names=["img1", "img_empty"])
+    assert metrics_with_empty["cat"].ap50 == pytest.approx(0.5, abs=1e-6)

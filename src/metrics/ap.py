@@ -8,6 +8,20 @@ from .types import Metrics
 _IOU_THRESHOLDS = [round(x, 2) for x in np.arange(0.50, 0.96, 0.05)]
 
 
+def _resolve_split_images(
+    gt_df: pd.DataFrame,
+    split_image_names: list[str] | None,
+) -> list[str] | npt.NDArray[np.str_]:
+    """Return the image names to scope predictions to for this split.
+
+    Prefers the caller-supplied list (which may include empty images with no
+    GT rows) and falls back to the images that appear in gt_df.
+    """
+    if split_image_names is not None:
+        return split_image_names
+    return gt_df["image_name"].unique()
+
+
 def compute_ap(recall: npt.NDArray[np.float64], precision: npt.NDArray[np.float64]) -> float:
     """VOC 2010+ AP interpolation — byte-equivalent to ultralytics compute_ap.
 
@@ -32,6 +46,7 @@ def compute_map(
     gt_df: pd.DataFrame,
     preds_df: pd.DataFrame,
     metrics: dict[str, Metrics],
+    split_image_names: list[str] | None = None,
 ) -> None:
     """Compute mAP50/75/50-95 per class and write into metrics in place.
 
@@ -47,6 +62,12 @@ def compute_map(
             dropped before scoring so they cannot count as false positives
             against this split.
         metrics: Dict of Metrics objects; ap50/ap75/ap50_95 are set in place.
+        split_image_names: Complete list of image names belonging to this
+            split, including images with zero GT boxes (empty images).  When
+            provided, predictions are scoped to this list so that detections
+            on empty images are correctly counted as FPs.  When None, falls
+            back to the set of images that appear in gt_df (old behaviour,
+            which silently drops FPs on empty images).
     """
     x1, y1, x2, y2 = "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"
 
@@ -54,7 +75,7 @@ def compute_map(
     # this, predictions for train/test images would be scored as FPs here
     # (and interleaved into the confidence-sorted P-R curve), inflating FP
     # counts and crushing AP relative to a properly split-scoped computation.
-    split_images = gt_df["image_name"].unique()
+    split_images = _resolve_split_images(gt_df, split_image_names)
     preds_df = preds_df[preds_df["image_name"].isin(split_images)]
 
     classes_in_split = set(gt_df["instance_label"].unique().tolist())
