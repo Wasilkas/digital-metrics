@@ -17,6 +17,7 @@ from .dashboard import get_dashboards, plot_confidence_intervals
 from .iou import compute_iou_matrix, find_duplicates_bboxes
 from .kappa import compute_kappa
 from .matching import MatchingStrategy, match_boxes
+from .nms import apply_nms, filter_by_confidence
 from .types import Metrics, PredictMatch
 
 _REQUIRED_COLS_GT = {
@@ -66,6 +67,9 @@ class Evaluation:
         skip_cohen_kappa: bool = True,
         matching_strategy: MatchingStrategy = "greedy",
         split_image_names: list[str] | None = None,
+        preprocess_preds_conf_threshold: float | None = None,
+        preprocess_preds_nms_containment_threshold: float | None = None,
+        preprocess_preds_nms_iou_threshold: float | None = None,
     ) -> None:
         """Initialise the Evaluation object.
 
@@ -82,6 +86,19 @@ class Evaluation:
                 both mAP and P/R/F1.  When None, only images that appear in
                 split_df are considered (images with no annotations are
                 invisible and their FPs are silently dropped).
+            preprocess_preds_conf_threshold: Drop predictions whose confidence
+                is strictly below this value before evaluation.  None disables
+                confidence filtering.
+            preprocess_preds_nms_containment_threshold: Same-class containment
+                threshold for custom NMS.  For each pair of same-class boxes,
+                the lower-confidence one is suppressed when
+                intersection / min(area_a, area_b) >= threshold (i.e. one box
+                is largely inside the other).  None disables same-class
+                containment suppression (equivalent to setting threshold > 1).
+            preprocess_preds_nms_iou_threshold: Cross-class IoU threshold for
+                custom NMS.  The lower-confidence prediction is suppressed when
+                two different-class boxes have IoU >= threshold.  None disables
+                cross-class NMS.
         """
         self.suffix = "default"
 
@@ -105,6 +122,11 @@ class Evaluation:
         self._skip_cohen_kappa = skip_cohen_kappa
         self.matching_strategy: MatchingStrategy = matching_strategy
         self._split_image_names: list[str] | None = split_image_names
+        self._preds_conf_threshold: float | None = preprocess_preds_conf_threshold
+        self._preds_nms_containment_threshold: float | None = (
+            preprocess_preds_nms_containment_threshold
+        )
+        self._preds_nms_iou_threshold: float | None = preprocess_preds_nms_iou_threshold
 
         self.metrics: dict[str, Metrics] = {}
         self.cm: npt.NDArray[np.int64] | None = None
@@ -114,6 +136,12 @@ class Evaluation:
 
         if preprocess:
             self._preprocess()
+        if (
+            preprocess_preds_conf_threshold is not None
+            or preprocess_preds_nms_containment_threshold is not None
+            or preprocess_preds_nms_iou_threshold is not None
+        ):
+            self._preprocess_preds()
 
     def _validate_df(self, preds_df: pd.DataFrame, gt_df: pd.DataFrame) -> None:
         missing_gt = _REQUIRED_COLS_GT - set(gt_df.columns)
@@ -141,6 +169,31 @@ class Evaluation:
 
         self.split_df = self.split_df.drop(dups)
         logger.info(f"Preprocessing removed {initial_len - len(self.split_df)} duplicate GT rows.")
+
+    def _preprocess_preds(self) -> None:
+        """Apply confidence filtering and/or custom NMS to self.preds_df."""
+        if self._preds_conf_threshold is not None:
+            n_before = len(self.preds_df)
+            self.preds_df = filter_by_confidence(self.preds_df, self._preds_conf_threshold)
+            logger.info(
+                f"Predictions confidence filtering removed "
+                f"{n_before - len(self.preds_df)} rows "
+                f"(threshold={self._preds_conf_threshold})."
+            )
+
+        cont = self._preds_nms_containment_threshold
+        iou = self._preds_nms_iou_threshold
+        if cont is not None or iou is not None:
+            n_before = len(self.preds_df)
+            self.preds_df = apply_nms(
+                self.preds_df,
+                same_class_containment_threshold=cont if cont is not None else 1.01,
+                cross_class_iou_threshold=iou if iou is not None else 1.01,
+            )
+            logger.info(
+                f"Predictions NMS removed {n_before - len(self.preds_df)} rows "
+                f"(containment={cont}, iou={iou})."
+            )
 
     @property
     def best_confidences(self) -> dict[str, float]:
