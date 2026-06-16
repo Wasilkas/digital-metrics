@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from metrics.ap import compute_ap, compute_map
+from metrics.ap import APMethod, compute_ap, compute_map
 from metrics.types import Metrics
 
 
@@ -220,3 +220,99 @@ def test_compute_map_empty_images_count_as_fp() -> None:
     metrics_with_empty: dict[str, Metrics] = {"cat": Metrics()}
     compute_map(gt, preds, metrics_with_empty, split_image_names=["img1", "img_empty"])
     assert metrics_with_empty["cat"].ap50 == pytest.approx(0.5, abs=1e-6)
+
+
+# --- interp (101-point COCO) method tests ---
+
+
+@pytest.mark.parametrize("method", ["continuous", "interp"])
+def test_ap_perfect_detector_both_methods(method: APMethod) -> None:
+    recall = np.array([0.1, 0.2, 0.5, 1.0])
+    precision = np.array([1.0, 1.0, 1.0, 1.0])
+    assert compute_ap(recall, precision, method) == pytest.approx(1.0, abs=1e-3)
+
+
+@pytest.mark.parametrize("method", ["continuous", "interp"])
+def test_ap_zero_precision_both_methods(method: APMethod) -> None:
+    recall = np.array([0.0, 0.5, 1.0])
+    precision = np.array([0.0, 0.0, 0.0])
+    assert compute_ap(recall, precision, method) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_ap_interp_empty_recall_returns_zero() -> None:
+    # interp method must not crash on empty arrays (no predictions made)
+    assert compute_ap(np.array([]), np.array([]), method="interp") == pytest.approx(0.0)
+
+
+def test_ap_interp_in_unit_interval() -> None:
+    rng = np.random.default_rng(0)
+    recall = np.sort(rng.uniform(0, 1, 20))
+    precision = rng.uniform(0, 1, 20)
+    ap = compute_ap(recall, precision, method="interp")
+    assert 0.0 <= ap <= 1.0
+
+
+def test_compute_map_interp_perfect() -> None:
+    gt, preds = _make_perfect_dataset()
+    metrics: dict[str, Metrics] = {"cat": Metrics()}
+    compute_map(gt, preds, metrics, method="interp")
+    assert metrics["cat"].ap50 == pytest.approx(1.0, abs=1e-3)
+    assert metrics["cat"].ap75 == pytest.approx(1.0, abs=1e-3)
+    assert 0.0 <= metrics["cat"].ap50_95 <= 1.0
+
+
+def test_compute_map_interp_all_fp() -> None:
+    cols_gt = ["image_name", "instance_label", "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "split"]
+    gt = pd.DataFrame([("img1", "cat", 0, 0, 100, 100, "test")], columns=cols_gt)
+    cols_p = ["image_name", "instance_label", "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "confidence"]
+    preds = pd.DataFrame([("img1", "cat", 500, 500, 600, 600, 0.9)], columns=cols_p)
+    metrics: dict[str, Metrics] = {"cat": Metrics()}
+    compute_map(gt, preds, metrics, method="interp")
+    assert metrics["cat"].ap50 == pytest.approx(0.0, abs=1e-3)
+
+
+def test_compute_map_strategy_greedy_vs_iou_prior() -> None:
+    """Greedy and iou_prior give different AP when confidence and IoU rankings disagree.
+
+    One GT; pred_a has higher confidence but lower IoU than pred_b.
+    Greedy: pred_a wins the GT (TP first) → AP=1.0 at IoU=0.5.
+    IoU-prior: pred_b wins the GT (higher IoU) → pred_a is FP first in the
+    confidence-sorted curve → AP=0.5.
+    """
+    cols_gt = ["image_name", "instance_label", "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "split"]
+    gt = pd.DataFrame([("img", "cat", 0, 0, 100, 100, "test")], columns=cols_gt)
+    cols_p = ["image_name", "instance_label", "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "confidence"]
+    preds = pd.DataFrame(
+        [
+            ("img", "cat", 0, 0, 80, 100, 0.9),   # IoU=0.80, high conf
+            ("img", "cat", 0, 0, 100, 100, 0.5),  # IoU=1.00, low conf
+        ],
+        columns=cols_p,
+    )
+
+    m_greedy: dict[str, Metrics] = {"cat": Metrics()}
+    compute_map(gt, preds, m_greedy, strategy="greedy")
+    assert m_greedy["cat"].ap50 == pytest.approx(1.0, abs=1e-6)
+
+    m_iou: dict[str, Metrics] = {"cat": Metrics()}
+    compute_map(gt, preds, m_iou, strategy="iou_prior")
+    assert m_iou["cat"].ap50 == pytest.approx(0.5, abs=1e-3)
+
+
+def test_compute_map_strategy_hungarian_raises() -> None:
+    cols_gt = ["image_name", "instance_label", "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "split"]
+    gt = pd.DataFrame([("img", "cat", 0, 0, 100, 100, "test")], columns=cols_gt)
+    cols_p = ["image_name", "instance_label", "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "confidence"]
+    preds = pd.DataFrame([("img", "cat", 0, 0, 100, 100, 0.9)], columns=cols_p)
+    with pytest.raises(ValueError, match="hungarian"):
+        compute_map(gt, preds, {"cat": Metrics()}, strategy="hungarian")
+
+
+def test_ap_interp_lower_than_continuous_for_imperfect_curve() -> None:
+    # For a non-trivial PR curve the two methods produce different values.
+    # Neither is universally larger; we just verify they differ.
+    recall = np.array([0.2, 0.4, 0.6, 0.8])
+    precision = np.array([0.9, 0.7, 0.5, 0.3])
+    ap_cont = compute_ap(recall, precision, method="continuous")
+    ap_interp = compute_ap(recall, precision, method="interp")
+    assert ap_cont != pytest.approx(ap_interp, abs=1e-4)

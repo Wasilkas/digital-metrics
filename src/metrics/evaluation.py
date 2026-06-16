@@ -10,7 +10,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from tqdm import tqdm
 
-from .ap import compute_map
+from .ap import APMethod, compute_map
 from .confidence import find_best_confidences, slice_by_conf
 from .confusion import get_confusion_matrix, get_confusions
 from .dashboard import get_dashboards, plot_confidence_intervals
@@ -69,6 +69,7 @@ class Evaluation:
         preprocess_preds_conf_threshold: float | None = None,
         preprocess_preds_nms_containment_threshold: float | None = None,
         preprocess_preds_nms_iou_threshold: float | None = None,
+        ap_method: APMethod = "continuous",
     ) -> None:
         """Initialise the Evaluation object.
 
@@ -78,7 +79,8 @@ class Evaluation:
             iou_threshold: IoU threshold for box matching. Defaults to 0.5.
             preprocess: Remove duplicate GT boxes if True. Defaults to False.
             skip_cohen_kappa: Skip cohen_kappa computation. Defaults to True.
-            matching_strategy: "greedy" (default, YOLO-style) or "hungarian".
+            matching_strategy: "greedy" (default, YOLO-style), "hungarian",
+                or "iou_prior".
             preprocess_preds_conf_threshold: Drop predictions whose confidence
                 is strictly below this value before evaluation.  None disables
                 confidence filtering.
@@ -92,6 +94,9 @@ class Evaluation:
                 custom NMS.  The lower-confidence prediction is suppressed when
                 two different-class boxes have IoU >= threshold.  None disables
                 cross-class NMS.
+            ap_method: AP integration method for mAP computation — ``"continuous"``
+                (default, VOC 2010+ rectangle-area) or ``"interp"``
+                (101-point COCO interpolation, Ultralytics-compatible).
         """
         self.suffix = "default"
 
@@ -101,6 +106,7 @@ class Evaluation:
             split_df = pd.read_csv(split_df)
 
         self.preds_df: pd.DataFrame = preds_df.reset_index(drop=True)
+        self._raw_preds_df: pd.DataFrame = self.preds_df.copy()
         self.split_df: pd.DataFrame = split_df.reset_index(drop=True)
         self.gt_df: pd.DataFrame | None = None
 
@@ -119,6 +125,7 @@ class Evaluation:
             preprocess_preds_nms_containment_threshold
         )
         self._preds_nms_iou_threshold: float | None = preprocess_preds_nms_iou_threshold
+        self._ap_method: APMethod = ap_method
 
         self.metrics: dict[str, Metrics] = {}
         self.cm: npt.NDArray[np.int64] | None = None
@@ -256,7 +263,14 @@ class Evaluation:
         self.metrics = _compute_metrics_from_matches(
             self._matches, self.classes, self._best_confidences
         )
-        compute_map(self.gt_df, self.preds_df, self.metrics, split_image_names)
+        # Hungarian is not supported in the mAP inner loop; fall back to greedy.
+        map_strategy = (
+            "greedy" if self.matching_strategy == "hungarian" else self.matching_strategy
+        )
+        compute_map(
+            self.gt_df, self._raw_preds_df, self.metrics, split_image_names,
+            method=self._ap_method, strategy=map_strategy,
+        )
         self._compute_cohen_kappa()
         self.cm, self.class_labels = get_confusion_matrix(self._matches, self.classes)
         logger.info("Metrics and confusion matrix computed.")

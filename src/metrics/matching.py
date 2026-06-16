@@ -8,7 +8,7 @@ from scipy.optimize import linear_sum_assignment
 from .iou import compute_iou_matrix
 from .types import PredictMatch
 
-MatchingStrategy = Literal["greedy", "hungarian"]
+MatchingStrategy = Literal["greedy", "hungarian", "iou_prior"]
 
 
 def _resolve_matching_scope(
@@ -57,7 +57,9 @@ def match_boxes(
     """
     if strategy == "greedy":
         return _match_boxes_greedy(gt_df, preds_df, iou_threshold, split_image_names)
-    return _match_boxes_hungarian(gt_df, preds_df, iou_threshold, split_image_names)
+    if strategy == "hungarian":
+        return _match_boxes_hungarian(gt_df, preds_df, iou_threshold, split_image_names)
+    return _match_boxes_iou_prior(gt_df, preds_df, iou_threshold, split_image_names)
 
 
 def _row_index(row: Any) -> int:
@@ -199,6 +201,120 @@ def _match_boxes_hungarian(
                 gt_label="background",
                 pred_index=_row_index(pred_row),
                 gt_index=-1,
+                confidence=float(pred_row["confidence"]),
+            )
+            matches.setdefault(pred_label, []).append(match)
+
+        # Unmatched GTs → FN
+        for gt_j in range(n_gts):
+            if gt_j in matched_gts:
+                continue
+            gt_row = gt.iloc[gt_j]
+            gt_label = str(gt_row["instance_label"])
+            fn_match = PredictMatch(
+                pred_label="background",
+                gt_label=gt_label,
+                pred_index=-1,
+                gt_index=_row_index(gt_row),
+                confidence=0.0,
+            )
+            matches.setdefault(gt_label, []).append(fn_match)
+
+    return matches
+
+
+def _match_boxes_iou_prior(
+    gt_df: pd.DataFrame,
+    preds_df: pd.DataFrame,
+    iou_threshold: float,
+    split_image_names: list[str] | None = None,
+) -> dict[str, list[PredictMatch]]:
+    """IoU-prior (Ultralytics non-scipy) box matching.
+
+    Finds all pred-GT pairs where IoU >= threshold and labels match, sorts
+    them by IoU descending, then assigns greedily — each pred and GT
+    consumed at most once, highest-IoU valid pairs assigned first.
+    Confidence plays no role in pairing order.
+    """
+    matches: dict[str, list[PredictMatch]] = {}
+    preds_df, all_images = _resolve_matching_scope(gt_df, preds_df, split_image_names)
+
+    for image_name in all_images:
+        gt = gt_df[gt_df["image_name"] == image_name]
+        preds = preds_df[preds_df["image_name"] == image_name]
+
+        gt_bboxes = gt[["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]].dropna().values
+        pred_bboxes = preds[["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]].values
+
+        n_preds = len(pred_bboxes)
+        n_gts = len(gt_bboxes)
+
+        if n_preds == 0 and n_gts == 0:
+            continue
+
+        iou_matrix: npt.NDArray[np.float32] = (
+            compute_iou_matrix(pred_bboxes, gt_bboxes)
+            if n_preds > 0 and n_gts > 0
+            else np.zeros((n_preds, n_gts), dtype=np.float32)
+        )
+
+        pred_labels_arr: npt.NDArray[np.object_] = preds["instance_label"].to_numpy(dtype=object)
+        gt_labels_arr: npt.NDArray[np.object_] = gt["instance_label"].to_numpy(dtype=object)
+
+        matched_preds: set[int] = set()
+        matched_gts: set[int] = set()
+
+        if n_preds > 0 and n_gts > 0:
+            label_match: npt.NDArray[np.bool_] = pred_labels_arr[:, None] == gt_labels_arr[None, :]
+            valid: npt.NDArray[np.bool_] = (iou_matrix >= iou_threshold) & label_match
+            pred_idxs, gt_idxs = np.nonzero(valid)
+
+            if len(pred_idxs) > 0:
+                order = np.argsort(-iou_matrix[pred_idxs, gt_idxs])
+                pred_idxs = pred_idxs[order]
+                gt_idxs = gt_idxs[order]
+
+                for pred_i, gt_j in zip(pred_idxs.tolist(), gt_idxs.tolist()):
+                    if pred_i in matched_preds or gt_j in matched_gts:
+                        continue
+                    pred_row = preds.iloc[pred_i]
+                    pred_label = str(pred_row["instance_label"])
+                    gt_label = str(gt.iloc[gt_j]["instance_label"])
+                    match = PredictMatch(
+                        pred_label=pred_label,
+                        gt_label=gt_label,
+                        pred_index=_row_index(pred_row),
+                        gt_index=_row_index(gt.iloc[gt_j]),
+                        confidence=float(pred_row["confidence"]),
+                    )
+                    matches.setdefault(pred_label, []).append(match)
+                    matched_preds.add(pred_i)
+                    matched_gts.add(gt_j)
+
+        # Unmatched predictions → FP.
+        # For cross-class confusion matrix entries, record the closest GT label
+        # when it differs from the pred label; otherwise "background".
+        for pred_i in range(n_preds):
+            if pred_i in matched_preds:
+                continue
+            pred_row = preds.iloc[pred_i]
+            pred_label = str(pred_row["instance_label"])
+
+            gt_label = "background"
+            gt_index = -1
+            if n_gts > 0:
+                best_gt_j = int(np.argmax(iou_matrix[pred_i]))
+                best_iou = float(iou_matrix[pred_i, best_gt_j])
+                closest_label = str(gt_labels_arr[best_gt_j])
+                if best_iou >= iou_threshold and closest_label != pred_label:
+                    gt_label = closest_label
+                    gt_index = _row_index(gt.iloc[best_gt_j])
+
+            match = PredictMatch(
+                pred_label=pred_label,
+                gt_label=gt_label,
+                pred_index=_row_index(pred_row),
+                gt_index=gt_index,
                 confidence=float(pred_row["confidence"]),
             )
             matches.setdefault(pred_label, []).append(match)
