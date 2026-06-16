@@ -66,6 +66,7 @@ src/
     evaluation.py     # Evaluation orchestrator class
     dashboard.py      # Excel export + CI plots
     confusion.py      # confusion matrix helpers
+    nms.py            # predictions preprocessing: confidence filter + custom NMS
 tests/
   conftest.py
   test_iou.py
@@ -73,6 +74,7 @@ tests/
   test_ap.py
   test_ci.py
   test_evaluation.py
+  test_nms.py
 pyproject.toml
 uv.lock
 CLAUDE.md
@@ -132,6 +134,10 @@ exactly as Ultralytics does:
 `_compute_ap` must be byte-for-byte equivalent to
 [`ultralytics/utils/metrics.py::compute_ap`](https://github.com/ultralytics/ultralytics/blob/main/ultralytics/utils/metrics.py).
 
+Classes with **no GT instances in the evaluated split** receive `float("nan")`
+for `ap50`, `ap75`, and `ap50_95` — not `0.0`. This matches how YOLO reports
+mAP50 and allows `nanmean` to correctly exclude absent classes from averages.
+
 ### What is NOT identical to YOLO
 
 Precision, recall, F1, and the confusion matrix are computed from
@@ -157,9 +163,15 @@ def match_boxes(
     preds_df: pd.DataFrame,
     iou_threshold: float,
     strategy: MatchingStrategy = "greedy",
+    split_image_names: list[str] | None = None,
 ) -> dict[str, list[PredictMatch]]:
     ...
 ```
+
+`split_image_names` is an internal parameter populated by `Evaluation._call`
+from `gt_df["image_name"].unique()` (the split-filtered ground truth).
+External callers of `match_boxes` can pass `None` to iterate only over images
+present in `gt_df`.
 
 ### Greedy (default, YOLO-style)
 
@@ -215,6 +227,8 @@ Implementation notes:
   - Full `Evaluation` round-trip: check `metrics` keys, `cm` shape,
     and that `ap50` field is populated for each class
   - `strategy="hungarian"` path runs without error and returns same keys
+  - NMS: `filter_by_confidence` drops rows below threshold; `apply_nms`
+    suppresses same-class containment and cross-class IoU duplicates
 
 Run: `uv run pytest --cov=src/metrics tests/`
 
@@ -224,14 +238,22 @@ Run: `uv run pytest --cov=src/metrics tests/`
 
 All of the following must exist after the refactor:
 
-- `Evaluation(preds_df, split_df, iou_threshold, preprocess, skip_cohen_kappa)`
-- `evaluation(split, find_best_confs)` — main call
+- `Evaluation(preds_df, split_df, iou_threshold, preprocess, skip_cohen_kappa,
+  matching_strategy, preprocess_preds_conf_threshold,
+  preprocess_preds_nms_containment_threshold, preprocess_preds_nms_iou_threshold)`
+- `evaluation(split, find_best_confs, calibration_split)` — main call
 - `evaluation.metrics` — `dict[str, Metrics]`
 - `evaluation.cm`, `evaluation.class_labels`
+- `evaluation.best_confidences` — `dict[str, float]` (per-class optimal threshold)
+- `evaluation.unfiltered_matches` — matches before confidence slicing
 - `evaluation.get_dashboards(save_to_excel, path, save_confusion_matrix)`
 - `evaluation.plot_confidence_intervals(metric, confidence_level, save_path, figsize)`
 - `evaluation.get_topk_confusions(main_class, k)`
 - `evaluation.get_dfs_visualization()`
 - `Metrics` fields: `tp, fp, fn, confidence, ap50, ap75, ap50_95, cohen_kappa,
   precision, recall, f1_score, perebrak, nedobrak, *_ci_lower, *_ci_upper`
+  — `ap50/ap75/ap50_95` are `float | nan` (NaN when class absent from split)
 - `PredictMatch` with `type` computed field
+- `nms.filter_by_confidence(preds_df, threshold)` → filtered DataFrame
+- `nms.apply_nms(preds_df, same_class_containment_threshold, cross_class_iou_threshold)`
+  → DataFrame with suppressed rows removed

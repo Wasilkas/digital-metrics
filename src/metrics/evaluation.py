@@ -66,7 +66,6 @@ class Evaluation:
         preprocess: bool = False,
         skip_cohen_kappa: bool = True,
         matching_strategy: MatchingStrategy = "greedy",
-        split_image_names: list[str] | None = None,
         preprocess_preds_conf_threshold: float | None = None,
         preprocess_preds_nms_containment_threshold: float | None = None,
         preprocess_preds_nms_iou_threshold: float | None = None,
@@ -80,12 +79,6 @@ class Evaluation:
             preprocess: Remove duplicate GT boxes if True. Defaults to False.
             skip_cohen_kappa: Skip cohen_kappa computation. Defaults to True.
             matching_strategy: "greedy" (default, YOLO-style) or "hungarian".
-            split_image_names: Complete list of image names in the evaluated
-                split, including images that have zero GT annotations (empty
-                images).  Predictions on empty images are counted as FPs for
-                both mAP and P/R/F1.  When None, only images that appear in
-                split_df are considered (images with no annotations are
-                invisible and their FPs are silently dropped).
             preprocess_preds_conf_threshold: Drop predictions whose confidence
                 is strictly below this value before evaluation.  None disables
                 confidence filtering.
@@ -121,7 +114,6 @@ class Evaluation:
         self._best_confidences: dict[str, float] = {c: 0.0 for c in self.classes}
         self._skip_cohen_kappa = skip_cohen_kappa
         self.matching_strategy: MatchingStrategy = matching_strategy
-        self._split_image_names: list[str] | None = split_image_names
         self._preds_conf_threshold: float | None = preprocess_preds_conf_threshold
         self._preds_nms_containment_threshold: float | None = (
             preprocess_preds_nms_containment_threshold
@@ -236,13 +228,15 @@ class Evaluation:
 
         self._validate_df(self.preds_df, self.gt_df)
 
+        split_image_names = self.gt_df["image_name"].unique().tolist()
+
         logger.info("Matching boxes...")
         self._matches = match_boxes(
             self.gt_df,
             self.preds_df,
             self.iou_threshold,
             strategy=self.matching_strategy,
-            split_image_names=self._split_image_names,
+            split_image_names=split_image_names,
         )
         logger.info("Matching complete.")
 
@@ -262,7 +256,7 @@ class Evaluation:
         self.metrics = _compute_metrics_from_matches(
             self._matches, self.classes, self._best_confidences
         )
-        compute_map(self.gt_df, self.preds_df, self.metrics, self._split_image_names)
+        compute_map(self.gt_df, self.preds_df, self.metrics, split_image_names)
         self._compute_cohen_kappa()
         self.cm, self.class_labels = get_confusion_matrix(self._matches, self.classes)
         logger.info("Metrics and confusion matrix computed.")
@@ -307,12 +301,17 @@ class Evaluation:
                 "image_name belongs to exactly one split."
             )
 
+        cal_image_names = cal_gt["image_name"].unique().tolist()
         logger.info(
             f"Calibrating confidence thresholds on '{calibration_split}' split "
             f"({len(cal_gt)} GT rows)..."
         )
         cal_matches = match_boxes(
-            cal_gt, self.preds_df, self.iou_threshold, strategy=self.matching_strategy
+            cal_gt,
+            self.preds_df,
+            self.iou_threshold,
+            strategy=self.matching_strategy,
+            split_image_names=cal_image_names,
         )
         thresholds = find_best_confidences(cal_matches, self.classes)
         logger.info("Threshold calibration complete.")

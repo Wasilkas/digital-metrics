@@ -91,6 +91,29 @@ plausible pairing between predicted and ground-truth boxes.
 
 ---
 
+## Predictions preprocessing
+
+Apply confidence filtering and/or custom NMS before evaluation by passing
+thresholds to the constructor:
+
+```python
+ev = Evaluation(
+    preds_df,
+    split_df,
+    # Drop low-confidence predictions
+    preprocess_preds_conf_threshold=0.25,
+    # Suppress same-class box that is largely inside another (containment >= 0.8)
+    preprocess_preds_nms_containment_threshold=0.8,
+    # Suppress lower-confidence box when two different-class boxes overlap (IoU >= 0.5)
+    preprocess_preds_nms_iou_threshold=0.5,
+)
+```
+
+Each threshold is independent — set only the ones you need. Setting a threshold
+to `None` (the default) disables that suppression type.
+
+---
+
 ## Outputs
 
 ### `ev.metrics` — `dict[str, Metrics]`
@@ -105,9 +128,9 @@ Each `Metrics` object exposes:
 | `f1_score` | 2 · P · R / (P + R) |
 | `perebrak` | 1 − precision (false-positive rate) |
 | `nedobrak` | 1 − recall (miss rate) |
-| `ap50` | AP at IoU = 0.50 |
-| `ap75` | AP at IoU = 0.75 |
-| `ap50_95` | mAP averaged over IoU 0.50 … 0.95 |
+| `ap50` | AP at IoU = 0.50 (`nan` when class absent from split) |
+| `ap75` | AP at IoU = 0.75 (`nan` when class absent from split) |
+| `ap50_95` | mAP averaged over IoU 0.50 … 0.95 (`nan` when class absent from split) |
 | `cohen_kappa` | Cohen's kappa via pixel-mask method |
 | `confidence` | Best confidence threshold for this class |
 | `precision_ci_lower/upper` | Wilson 95 % CI on precision |
@@ -153,8 +176,26 @@ Evaluation(
     preprocess: bool = False,       # deduplicate near-identical GT boxes
     skip_cohen_kappa: bool = True,  # kappa is expensive; enable only when needed
     matching_strategy: MatchingStrategy = "greedy",
+    preprocess_preds_conf_threshold: float | None = None,
+    preprocess_preds_nms_containment_threshold: float | None = None,
+    preprocess_preds_nms_iou_threshold: float | None = None,
 )
 ```
+
+The image scope for each split is derived automatically from the `split`
+column in `split_df` — no extra list needs to be passed.
+
+`preprocess_preds_conf_threshold` — drop predictions with `confidence <
+threshold` before evaluation.
+
+`preprocess_preds_nms_containment_threshold` — same-class containment
+suppression: the lower-confidence box is removed when
+`intersection / min(area_a, area_b) >= threshold`.
+
+`preprocess_preds_nms_iou_threshold` — cross-class IoU suppression: the
+lower-confidence box is removed when `IoU >= threshold`.
+
+Setting either NMS threshold to `None` disables that suppression type.
 
 ---
 
