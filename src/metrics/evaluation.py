@@ -11,7 +11,12 @@ from matplotlib.figure import Figure
 from tqdm import tqdm
 
 from .ap import APMethod, compute_map
-from .confidence import find_best_confidences, slice_by_conf
+from .confidence import (
+    ConfidenceOptimization,
+    find_best_confidences,
+    find_best_global_confidence,
+    slice_by_conf,
+)
 from .confusion import get_confusion_matrix, get_confusions
 from .dashboard import get_dashboards, plot_confidence_intervals
 from .iou import compute_iou_matrix, find_duplicates_bboxes
@@ -70,6 +75,7 @@ class Evaluation:
         preprocess_preds_nms_containment_threshold: float | None = None,
         preprocess_preds_nms_iou_threshold: float | None = None,
         ap_method: APMethod = "continuous",
+        confidence_optimization: ConfidenceOptimization = "per_class",
     ) -> None:
         """Initialise the Evaluation object.
 
@@ -97,6 +103,12 @@ class Evaluation:
             ap_method: AP integration method for mAP computation — ``"continuous"``
                 (default, VOC 2010+ rectangle-area) or ``"interp"``
                 (101-point COCO interpolation, Ultralytics-compatible).
+            confidence_optimization: How to choose confidence thresholds when
+                ``find_best_confs`` is enabled or a ``calibration_split`` is
+                used. ``"per_class"`` (default) tunes a separate threshold per
+                class to maximise that class's F1. ``"global"`` mirrors YOLO and
+                picks a single threshold, shared by every class, that maximises
+                the mean per-class F1.
         """
         self.suffix = "default"
 
@@ -126,6 +138,7 @@ class Evaluation:
         )
         self._preds_nms_iou_threshold: float | None = preprocess_preds_nms_iou_threshold
         self._ap_method: APMethod = ap_method
+        self._confidence_optimization: ConfidenceOptimization = confidence_optimization
 
         self.metrics: dict[str, Metrics] = {}
         self.cm: npt.NDArray[np.int64] | None = None
@@ -251,7 +264,7 @@ class Evaluation:
             self._best_confidences = self._calibrate(calibration_split)
         elif find_best_confs:
             logger.info("Finding best confidence thresholds (in-sample)...")
-            self._best_confidences = find_best_confidences(self._matches, self.classes)
+            self._best_confidences = self._find_confidences(self._matches)
             logger.info("Best thresholds found.")
 
         logger.info("Filtering by best confidence thresholds...")
@@ -264,8 +277,12 @@ class Evaluation:
             self._matches, self.classes, self._best_confidences
         )
         compute_map(
-            self.gt_df, self._raw_preds_df, self.metrics, split_image_names,
-            method=self._ap_method, strategy=self.matching_strategy,
+            self.gt_df,
+            self._raw_preds_df,
+            self.metrics,
+            split_image_names,
+            method=self._ap_method,
+            strategy=self.matching_strategy,
         )
         self._compute_cohen_kappa()
         self.cm, self.class_labels = get_confusion_matrix(self._matches, self.classes)
@@ -323,9 +340,20 @@ class Evaluation:
             strategy=self.matching_strategy,
             split_image_names=cal_image_names,
         )
-        thresholds = find_best_confidences(cal_matches, self.classes)
+        thresholds = self._find_confidences(cal_matches)
         logger.info("Threshold calibration complete.")
         return thresholds
+
+    def _find_confidences(self, matches: dict[str, list[PredictMatch]]) -> dict[str, float]:
+        """Choose confidence thresholds per the configured optimisation mode.
+
+        ``"per_class"`` returns an independent threshold per class;
+        ``"global"`` returns the same YOLO-style threshold for every class.
+        """
+        if self._confidence_optimization == "global":
+            threshold = find_best_global_confidence(matches, self.classes)
+            return {c: threshold for c in self.classes}
+        return find_best_confidences(matches, self.classes)
 
     def _compute_cohen_kappa(self) -> None:
         assert self.gt_df is not None

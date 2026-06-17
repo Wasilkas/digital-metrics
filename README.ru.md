@@ -83,6 +83,38 @@ ev(split="test", calibration_split="val")
 
 ---
 
+## Оптимизация порога уверенности
+
+Когда включён `find_best_confs=True` (или задан `calibration_split`), пороги
+уверенности подбираются автоматически. Доступны два режима через параметр
+`confidence_optimization`:
+
+```python
+from metrics import Evaluation, ConfidenceOptimization
+
+# По умолчанию: отдельный порог для каждого класса, максимизирующий его F1
+ev = Evaluation(preds_df, split_df, confidence_optimization="per_class")
+
+# В стиле YOLO: единый порог, общий для всех классов
+ev = Evaluation(preds_df, split_df, confidence_optimization="global")
+ev(split="test", calibration_split="val")
+```
+
+- **`"per_class"`** (по умолчанию) — в `ev.best_confidences` для каждого класса
+  свой порог, подобранный для максимума F1 этого класса. Подходит, когда нужно
+  выжать максимум качества по каждому классу.
+- **`"global"`** — повторяет поведение Ultralytics YOLO, который применяет
+  **один** порог уверенности ко всем классам. Выбирается порог, максимизирующий
+  **средний F1 по классам**, и применяется одинаково ко всем — поэтому все
+  значения в `ev.best_confidences` совпадают. Используйте этот режим, когда
+  метрики должны быть сопоставимы с YOLO, или когда в продакшене применяется
+  единое значение `conf`.
+
+Оба режима работают и в схеме калибровки по валидации: пороги находятся на
+калибровочном сплите и применяются к оцениваемому.
+
+---
+
 ## Стратегии сопоставления рамок
 
 Сопоставление предсказанных и эталонных рамок (box matching) доступно в трёх
@@ -254,7 +286,8 @@ Evaluation(
     preprocess_preds_conf_threshold: float | None = None,
     preprocess_preds_nms_containment_threshold: float | None = None,
     preprocess_preds_nms_iou_threshold: float | None = None,
-    ap_method: APMethod = "continuous",
+    ap_method: APMethod = "continuous",                          # "continuous" | "interp"
+    confidence_optimization: ConfidenceOptimization = "per_class",  # "per_class" | "global"
 )
 ```
 
@@ -276,6 +309,11 @@ Evaluation(
 - `preprocess_preds_nms_iou_threshold` — межклассовое подавление по IoU: при
   `IoU >= threshold` для рамок разных классов удаляется рамка с меньшей
   уверенностью. `None` отключает.
+- `ap_method` — метод интегрирования AP: `"continuous"` (по умолчанию) или
+  `"interp"`.
+- `confidence_optimization` — `"per_class"` (по умолчанию) подбирает порог для
+  каждого класса; `"global"` выбирает единый порог в стиле YOLO, общий для всех
+  классов (см. раздел [Оптимизация порога уверенности](#оптимизация-порога-уверенности)).
 
 ### Вызов `evaluation(...)`
 

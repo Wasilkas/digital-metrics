@@ -76,6 +76,38 @@ ev(split="test", calibration_split="val")
 
 ---
 
+## Confidence-threshold optimization
+
+When `find_best_confs=True` (or a `calibration_split` is given), confidence
+thresholds are tuned automatically. Two modes are available via
+`confidence_optimization=`:
+
+```python
+from metrics import Evaluation, ConfidenceOptimization
+
+# Default: one threshold per class, each maximising that class's F1
+ev = Evaluation(preds_df, split_df, confidence_optimization="per_class")
+
+# YOLO-style: a single threshold shared by all classes
+ev = Evaluation(preds_df, split_df, confidence_optimization="global")
+ev(split="test", calibration_split="val")
+```
+
+- **`"per_class"`** (default) — `ev.best_confidences` holds a *different*
+  threshold per class, each chosen to maximise that class's F1. Best for
+  squeezing per-class quality out of a model.
+- **`"global"`** — mirrors Ultralytics YOLO, which applies **one** confidence
+  threshold to every class. The threshold that maximises the **mean per-class
+  F1** is selected and applied uniformly, so every entry in
+  `ev.best_confidences` is identical. Use this when reporting numbers that must
+  be comparable to YOLO's, or when production inference runs a single `conf`
+  value.
+
+Both modes honour the val-calibration workflow: thresholds are found on the
+calibration split and applied to the evaluation split.
+
+---
+
 ## Matching strategies
 
 ```python
@@ -181,11 +213,17 @@ Evaluation(
     preprocess_preds_conf_threshold: float | None = None,
     preprocess_preds_nms_containment_threshold: float | None = None,
     preprocess_preds_nms_iou_threshold: float | None = None,
+    ap_method: APMethod = "continuous",                          # "continuous" | "interp"
+    confidence_optimization: ConfidenceOptimization = "per_class",  # "per_class" | "global"
 )
 ```
 
 The image scope for each split is derived automatically from the `split`
 column in `split_df` — no extra list needs to be passed.
+
+`confidence_optimization` — `"per_class"` (default) tunes one threshold per
+class; `"global"` picks a single YOLO-style threshold shared by all classes
+(see [Confidence-threshold optimization](#confidence-threshold-optimization)).
 
 `preprocess_preds_conf_threshold` — drop predictions with `confidence <
 threshold` before evaluation.
