@@ -184,6 +184,9 @@ def plot_confidence_intervals(
     plt.tight_layout()
 
     if save_path:
+        parent = os.path.dirname(save_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         plt.savefig(save_path, bbox_inches="tight", dpi=300)
         logger.info(f"Confidence interval plot saved to {save_path}")
     else:

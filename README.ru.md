@@ -39,6 +39,17 @@ pip install git+https://github.com/Wasilkas/digital-metrics
 
 Где `GT` — таблица эталонной разметки, `Preds` — таблица предсказаний модели.
 
+### Валидация входных данных
+
+При запуске оценки входные данные проверяются, и поднимается `ValueError`, если:
+
+- отсутствуют обязательные столбцы (по схеме выше);
+- в столбце `confidence` таблицы предсказаний есть значения `NA`;
+- метки `instance_label` предсказаний отсутствуют в наборе классов эталона.
+
+(Схема калибровки val/test дополнительно отклоняет сплиты, которые делят общий
+`image_name`, чтобы исключить утечку калибровочных данных.)
+
 ---
 
 ## Быстрый старт
@@ -123,17 +134,17 @@ ev(split="test", calibration_split="val")
 ```python
 from metrics import Evaluation, MatchingStrategy
 
-# По умолчанию: greedy (сортировка по уверенности)
+# По умолчанию: iou_prior — в стиле Ultralytics (без scipy), сортировка по IoU
+ev = Evaluation(preds_df, split_df, matching_strategy="iou_prior")
+
+# greedy — сортировка по уверенности (в стиле YOLO)
 ev = Evaluation(preds_df, split_df, matching_strategy="greedy")
 
 # Hungarian — глобально оптимальное сопоставление по геометрии
 ev = Evaluation(preds_df, split_df, matching_strategy="hungarian")
-
-# IoU-prior — в стиле Ultralytics (без scipy), уверенность не участвует в подборе пар
-ev = Evaluation(preds_df, split_df, matching_strategy="iou_prior")
 ```
 
-### `greedy` (по умолчанию)
+### `greedy`
 
 1. Предсказания сортируются по убыванию уверенности.
 2. Для каждого предсказания ищется ещё не занятая эталонная рамка с
@@ -143,9 +154,9 @@ ev = Evaluation(preds_df, split_df, matching_strategy="iou_prior")
 4. Иначе — FP с меткой эталона `"background"`.
 5. Все несопоставленные эталонные рамки → FN.
 
-Используется для P/R/F1/матрицы ошибок и (по умолчанию) во внутреннем цикле mAP.
+Используется для P/R/F1/матрицы ошибок и во внутреннем цикле mAP.
 
-### `iou_prior` (в стиле Ultralytics, без scipy)
+### `iou_prior` (по умолчанию, в стиле Ultralytics, без scipy)
 
 1. Находятся все пары «предсказание–эталон», где IoU ≥ порога **и** классы совпадают.
 2. Пары сортируются по убыванию IoU.
@@ -175,18 +186,18 @@ ev = Evaluation(preds_df, split_df, matching_strategy="iou_prior")
 ```python
 from metrics import Evaluation, APMethod
 
-# По умолчанию: непрерывное интегрирование (VOC 2010+)
-ev = Evaluation(preds_df, split_df, ap_method="continuous")
-
-# 101-точечная интерполяция в стиле COCO / Ultralytics
+# По умолчанию: 101-точечная интерполяция в стиле COCO / Ultralytics
 ev = Evaluation(preds_df, split_df, ap_method="interp")
+
+# Непрерывное интегрирование (VOC 2010+)
+ev = Evaluation(preds_df, split_df, ap_method="continuous")
 ```
 
-- **`"continuous"`** (по умолчанию) — интегрирование по площади прямоугольников
-  (VOC 2010+). Добавляет опорные точки `(0, 0)` и `(1, 0)`, строит огибающую
-  precision справа налево, суммирует площади прямоугольников в точках изменения recall.
-- **`"interp"`** — 101-точечная интерполяция COCO, совместимая с Ultralytics.
-  Интегрирует через `np.trapezoid` по 101 равномерной точке recall.
+- **`"interp"`** (по умолчанию) — 101-точечная интерполяция COCO, совместимая с
+  Ultralytics. Интегрирует через `np.trapezoid` по 101 равномерной точке recall.
+- **`"continuous"`** — интегрирование по площади прямоугольников (VOC 2010+).
+  Добавляет опорные точки `(0, 0)` и `(1, 0)`, строит огибающую precision справа
+  налево, суммирует площади прямоугольников в точках изменения recall.
 
 На фикстуре датасета методы расходятся не более чем на 0.001 по среднему mAP50.
 
@@ -245,13 +256,14 @@ ev(split="test", calibration_split="val")
   из модели (NMS уже применён), порог NMS можно оставить `None` — повторное
   применение служит лишь подстраховкой от межклассовых дубликатов.
 - **`ap_method="interp"`** — 101-точечное интегрирование трапециями
-  (`np.trapezoid`) — это в точности способ расчёта AP в Ultralytics.
+  (`np.trapezoid`) — это в точности способ расчёта AP в Ultralytics. Значение по
+  умолчанию в библиотеке.
 - **`confidence_optimization="global"`** — YOLO применяет один порог уверенности
   ко всем классам, выбранный по кривой среднего F1.
-- Для самого строгого совпадения на пути mAP можно дополнительно передать
-  `matching_strategy="iou_prior"` — он повторяет внутреннее сопоставление
-  Ultralytics по убыванию IoU; стратегия по умолчанию `"greedy"` тоже
-  YOLO-совместима и расходится примерно на 0.006 mAP50 на фикстуре.
+- **`matching_strategy="iou_prior"`** — значение по умолчанию; повторяет
+  внутреннее сопоставление Ultralytics по убыванию IoU. Альтернатива `"greedy"`
+  (в стиле YOLO, сортировка по уверенности) расходится примерно на 0.006 mAP50
+  на фикстуре.
 
 ### Почему другие параметры не создают проблемы
 
@@ -264,9 +276,9 @@ ev(split="test", calibration_split="val")
   `confidence_optimization` **никак не влияют** на mAP. Эти параметры лишь сдвигают
   единственную точку, в которой отчитываются precision/recall/F1 и матрица ошибок —
   любой выбор даёт корректную рабочую точку на той же кривой.
-- **Метод AP почти не важен.** `"continuous"` (точная площадь прямоугольников VOC)
-  и `"interp"` (трапеции COCO) расходятся на ≤ 0.001 на фикстуре; оба — стандартные
-  определения, поэтому значение по умолчанию `"continuous"` столь же обосновано.
+- **Метод AP почти не важен.** `"interp"` (трапеции COCO, по умолчанию) и
+  `"continuous"` (точная площадь прямоугольников VOC) расходятся на ≤ 0.001 на
+  фикстуре; оба — стандартные определения, поэтому любой из них обоснован.
 - **Per-class порог не хуже global.** Глобальный порог — это частный (ограниченный)
   случай per-class (одно общее значение против лучшего значения на класс), поэтому
   `"per_class"` даёт не меньший средний F1 и более тонкую рабочую точку — не
@@ -323,6 +335,9 @@ fig, ax = ev.plot_confidence_intervals(
 )
 ```
 
+Каталоги для вывода (`path` / родительский каталог `save_path`) создаются
+автоматически, если их ещё нет.
+
 ### Аудит ошибок
 
 ```python
@@ -344,14 +359,17 @@ Evaluation(
     iou_threshold: float = 0.5,
     preprocess: bool = False,        # удалять почти идентичные дубликаты эталонных рамок
     skip_cohen_kappa: bool = True,   # каппа дорогая; включайте только при необходимости
-    matching_strategy: MatchingStrategy = "greedy",
+    matching_strategy: MatchingStrategy = "iou_prior",  # "iou_prior" | "greedy" | "hungarian"
     preprocess_preds_conf_threshold: float | None = None,
     preprocess_preds_nms_containment_threshold: float | None = None,
     preprocess_preds_nms_iou_threshold: float | None = None,
-    ap_method: APMethod = "continuous",                          # "continuous" | "interp"
+    ap_method: APMethod = "interp",                              # "interp" | "continuous"
     confidence_optimization: ConfidenceOptimization = "per_class",  # "per_class" | "global"
 )
 ```
+
+Значения по умолчанию выбраны в стиле YOLO (`matching_strategy="iou_prior"`,
+`ap_method="interp"`).
 
 `preds_df` / `split_df` принимают как DataFrame, так и путь к CSV-файлу.
 
@@ -371,8 +389,8 @@ Evaluation(
 - `preprocess_preds_nms_iou_threshold` — межклассовое подавление по IoU: при
   `IoU >= threshold` для рамок разных классов удаляется рамка с меньшей
   уверенностью. `None` отключает.
-- `ap_method` — метод интегрирования AP: `"continuous"` (по умолчанию) или
-  `"interp"`.
+- `ap_method` — метод интегрирования AP: `"interp"` (по умолчанию) или
+  `"continuous"`.
 - `confidence_optimization` — `"per_class"` (по умолчанию) подбирает порог для
   каждого класса; `"global"` выбирает единый порог в стиле YOLO, общий для всех
   классов (см. раздел [Оптимизация порога уверенности](#оптимизация-порога-уверенности)).

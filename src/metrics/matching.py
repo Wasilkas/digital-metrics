@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -39,11 +39,6 @@ def _resolve_matching_scope(
     return preds_df, gt_df["image_name"].unique()
 
 
-def _row_index(row: Any) -> int:
-    """Return the integer index label of a pandas row."""
-    return int(row.name)
-
-
 def match_boxes(
     gt_df: pd.DataFrame,
     preds_df: pd.DataFrame,
@@ -71,15 +66,22 @@ def match_boxes(
     matches: dict[str, list[PredictMatch]] = {}
     preds_df, all_images = _resolve_matching_scope(gt_df, preds_df, split_image_names)
 
-    for image_name in all_images:
-        gt = gt_df[gt_df["image_name"] == image_name]
-        preds = preds_df[preds_df["image_name"] == image_name]
+    # Empty images carry placeholder GT rows (None label, NaN bbox coords)
+    # purely to keep the image in scope so predictions on it count as FPs.
+    # Drop them once so they never form phantom GT boxes/FNs and so the IoU
+    # matrix columns stay aligned with the gt rows used in _build_matches.
+    gt_df = gt_df.dropna(subset=_BBOX_COLS)
 
-        # Empty images carry placeholder GT rows (None label, NaN bbox coords)
-        # purely to keep the image in scope so predictions on it count as FPs.
-        # Drop them here so they never form phantom GT boxes/FNs and so the IoU
-        # matrix columns stay aligned with the gt rows used in _build_matches.
-        gt = gt.dropna(subset=_BBOX_COLS)
+    # Partition both frames by image in a single pass.  Per-image boolean
+    # masking inside the loop is O(images * rows); grouping is O(rows).
+    gt_groups = dict(tuple(gt_df.groupby("image_name", sort=False)))
+    preds_groups = dict(tuple(preds_df.groupby("image_name", sort=False)))
+    empty_gt = gt_df.iloc[:0]
+    empty_preds = preds_df.iloc[:0]
+
+    for image_name in all_images:
+        gt = gt_groups.get(image_name, empty_gt)
+        preds = preds_groups.get(image_name, empty_preds)
 
         if strategy == "greedy":
             # Greedy consumes the highest-IoU GT in confidence order, so the
@@ -147,16 +149,22 @@ def _build_matches(
     n_gts = len(gt)
     pred_to_gt = dict(pairs)
     matched_gts = {gt_j for _, gt_j in pairs}
+
+    # Extract columns to numpy once; per-row .iloc[...] builds a Series each
+    # call and dominates the loop on large images.
     gt_labels = gt["instance_label"].to_numpy(dtype=object)
+    gt_indices = gt.index.to_numpy()
+    pred_labels = preds["instance_label"].to_numpy(dtype=object)
+    pred_indices = preds.index.to_numpy()
+    pred_confs = preds["confidence"].to_numpy(dtype=np.float64)
 
     for pred_pos in range(n_preds):
-        pred_row = preds.iloc[pred_pos]
-        pred_label = str(pred_row["instance_label"])
+        pred_label = str(pred_labels[pred_pos])
 
         if pred_pos in pred_to_gt:
             gt_pos = pred_to_gt[pred_pos]
             gt_label = str(gt_labels[gt_pos])
-            gt_index = _row_index(gt.iloc[gt_pos])
+            gt_index = int(gt_indices[gt_pos])
         else:
             gt_label = "background"
             gt_index = -1
@@ -166,29 +174,28 @@ def _build_matches(
                 closest_label = str(gt_labels[best_gt_j])
                 if best_iou >= iou_threshold and closest_label != pred_label:
                     gt_label = closest_label
-                    gt_index = _row_index(gt.iloc[best_gt_j])
+                    gt_index = int(gt_indices[best_gt_j])
 
         matches.setdefault(pred_label, []).append(
             PredictMatch(
                 pred_label=pred_label,
                 gt_label=gt_label,
-                pred_index=_row_index(pred_row),
+                pred_index=int(pred_indices[pred_pos]),
                 gt_index=gt_index,
-                confidence=float(pred_row["confidence"]),
+                confidence=float(pred_confs[pred_pos]),
             )
         )
 
     for gt_pos in range(n_gts):
         if gt_pos in matched_gts:
             continue
-        gt_row = gt.iloc[gt_pos]
-        gt_label = str(gt_row["instance_label"])
+        gt_label = str(gt_labels[gt_pos])
         matches.setdefault(gt_label, []).append(
             PredictMatch(
                 pred_label="background",
                 gt_label=gt_label,
                 pred_index=-1,
-                gt_index=_row_index(gt_row),
+                gt_index=int(gt_indices[gt_pos]),
                 confidence=0.0,
             )
         )

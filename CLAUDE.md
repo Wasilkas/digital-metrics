@@ -149,14 +149,17 @@ exclude absent classes from averages.
 
 ### AP Methods (`APMethod`)
 
-Two AP integration methods are available via `ap_method=` on `Evaluation`:
+Two AP integration methods are available via `ap_method=` on `Evaluation`. The
+`Evaluation` constructor defaults to `"interp"` (YOLO-like); the lower-level
+`compute_map` still defaults to `"continuous"`.
 
-- **`"continuous"`** (default) — VOC 2010+ rectangle-area integration. Prepends
-  `(0, 0)` and appends `(1, 0)` sentinels, right-to-left precision envelope, sums
-  rectangle areas at recall change points.
-- **`"interp"`** — 101-point COCO interpolation, Ultralytics-compatible sentinels
-  (`mpre[0] = 1.0`, `mrec[-1] = recall[-1] + 1e-4`), integrates with `np.trapezoid`
-  over 101 equally-spaced recall points. Returns 0.0 on empty recall.
+- **`"interp"`** (Evaluation default) — 101-point COCO interpolation,
+  Ultralytics-compatible sentinels (`mpre[0] = 1.0`, `mrec[-1] = recall[-1] + 1e-4`),
+  integrates with `np.trapezoid` over 101 equally-spaced recall points. Returns
+  0.0 on empty recall.
+- **`"continuous"`** — VOC 2010+ rectangle-area integration. Prepends `(0, 0)`
+  and appends `(1, 0)` sentinels, right-to-left precision envelope, sums rectangle
+  areas at recall change points.
 
 On the fixture dataset the two methods differ by ≤ 0.001 on mean mAP50.
 
@@ -190,7 +193,10 @@ def match_boxes(
 `split_image_names` is an internal parameter populated by `Evaluation._call`
 from `gt_df["image_name"].unique()`. External callers can pass `None`.
 
-### Greedy (default, YOLO-style)
+Note: `match_boxes` (and `compute_map`) default to `"greedy"`, but the
+`Evaluation` constructor defaults to the YOLO-like `"iou_prior"`.
+
+### Greedy (YOLO-style)
 
 1. Sort predictions by confidence descending.
 2. For each prediction, find the highest-IoU unmatched GT.
@@ -198,9 +204,9 @@ from `gt_df["image_name"].unique()`. External callers can pass `None`.
 4. Otherwise → FP with `gt_label="background"`.
 5. Any unmatched GT → FN.
 
-Used for P/R/F1/CM and (by default) for the mAP inner loop.
+Used for P/R/F1/CM and for the mAP inner loop when selected as the strategy.
 
-### IoU-Prior (Ultralytics non-scipy style)
+### IoU-Prior (Evaluation default, Ultralytics non-scipy style)
 
 1. Find all pred-GT pairs where IoU ≥ threshold **and** labels match.
 2. Sort by IoU descending.
@@ -266,8 +272,11 @@ What it does:
 4. Evaluates on the `test` split
 5. Writes results to `fixtures/` and prints a per-class summary table
 
-Current preprocessing settings in the script:
+Current settings in the script. `matching_strategy`/`ap_method` are pinned to
+the documented baseline because the `Evaluation` defaults are now YOLO-like
+(`iou_prior`/`interp`):
 - `iou_threshold=0.3`
+- `matching_strategy="greedy"`, `ap_method="continuous"` (pinned)
 - `preprocess_preds_conf_threshold=0.1`
 - `preprocess_preds_nms_containment_threshold=0.9`
 - `preprocess_preds_nms_iou_threshold=0.6`
@@ -290,6 +299,9 @@ All of the following must exist after any refactor:
   preprocess_preds_nms_containment_threshold, preprocess_preds_nms_iou_threshold,
   ap_method, confidence_optimization)`
 - `evaluation(split, find_best_confs, calibration_split)` — main call
+- Input validation (raises `ValueError`): missing required columns, `NA` in the
+  predictions `confidence` column, prediction labels absent from the GT class
+  vocabulary, and val/test calibration splits that share an `image_name`
 - `evaluation.metrics` — `dict[str, Metrics]`
 - `evaluation.cm`, `evaluation.class_labels`
 - `evaluation.best_confidences` — `dict[str, float]` (per-class optimal threshold)
@@ -310,6 +322,10 @@ All of the following must exist after any refactor:
 - `MatchingStrategy = Literal["greedy", "hungarian", "iou_prior"]` exported from `metrics`
 - `ConfidenceOptimization = Literal["per_class", "global"]` exported from `metrics`
   — `"global"` selects a single YOLO-style threshold (max mean per-class F1) shared
-  by all classes; `"per_class"` (default) tunes one threshold per class
+  by all classes; `"per_class"` (default) tunes one threshold per class.
+  Both pick thresholds only at *realizable* operating points (confidence
+  tie-group boundaries), so the optimised F1 equals the F1 actually obtained when
+  the threshold is applied via `slice_by_conf` — tied confidences cannot produce
+  a non-achievable mid-tie optimum.
 - `compute_map(gt_df, preds_df, metrics, split_image_names, method, strategy)` —
   all three strategies supported including `"hungarian"`

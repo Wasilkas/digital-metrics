@@ -25,18 +25,20 @@ def find_best_confidences(
 
     for c in classes:
         cls_matches = matches.get(c, [])
-        if not cls_matches:
+        detections = sorted(
+            (m for m in cls_matches if m.type != "FN"),
+            key=lambda m: m.confidence,
+            reverse=True,
+        )
+        if not detections:
             best_confidences[c] = 0.0
             continue
 
-        cls_matches_sorted = sorted(cls_matches, key=lambda x: x.confidence, reverse=True)
-
-        no_fn = [m for m in cls_matches_sorted if m.type != "FN"]
-        tp_flags = np.array([m.type == "TP" for m in no_fn], dtype=bool)
-        fp_flags = ~tp_flags
+        confidences = np.array([m.confidence for m in detections])
+        tp_flags = np.array([m.type == "TP" for m in detections], dtype=bool)
 
         cum_tp = np.cumsum(tp_flags)
-        cum_fp = np.cumsum(fp_flags)
+        cum_fp = np.cumsum(~tp_flags)
 
         n_positives = sum(1 for m in cls_matches if m.type != "FP")
         precisions = cum_tp / np.maximum(cum_tp + cum_fp, 1e-6)
@@ -44,11 +46,16 @@ def find_best_confidences(
 
         f1_scores = 2.0 * precisions * recalls / np.maximum(precisions + recalls, 1e-6)
 
-        if len(f1_scores) == 0:
-            best_confidences[c] = 0.0
-        else:
-            best_index = int(np.argmax(f1_scores))
-            best_confidences[c] = cls_matches_sorted[best_index].confidence
+        # Thresholding keeps every detection with confidence >= t, so an interior
+        # index of a tied-confidence run describes a cut no threshold can produce.
+        # Only the last index of each run (where the next confidence differs) is
+        # realizable, so restrict the search to those boundaries.
+        is_boundary = np.ones(len(confidences), dtype=bool)
+        is_boundary[:-1] = confidences[:-1] != confidences[1:]
+        f1_scores[~is_boundary] = -1.0
+
+        best_index = int(np.argmax(f1_scores))
+        best_confidences[c] = float(confidences[best_index])
 
     return best_confidences
 

@@ -36,6 +36,17 @@ Both DataFrames share the same column names:
 | `split` | `str` | ✓ | — | `"train"` / `"val"` / `"test"` |
 | `confidence` | `float` | — | ✓ | Detection score in `[0, 1]` |
 
+### Input validation
+
+When evaluation runs, inputs are validated and a `ValueError` is raised on:
+
+- missing required columns (per the schema above),
+- `NA` values in the predictions `confidence` column,
+- prediction `instance_label`s absent from the ground-truth class vocabulary.
+
+(The val/test calibration workflow additionally rejects splits that share an
+`image_name`, to prevent calibration leakage.)
+
 ---
 
 ## Quick start
@@ -113,15 +124,18 @@ calibration split and applied to the evaluation split.
 ```python
 from metrics import Evaluation, MatchingStrategy
 
-# Default: greedy (YOLO-style, confidence-sorted)
-ev = Evaluation(preds_df, split_df, matching_strategy="greedy")
+# Default: iou_prior (Ultralytics non-scipy style — IoU-sorted, label-aware)
+ev = Evaluation(preds_df, split_df, matching_strategy="iou_prior")
 
-# Optional: Hungarian (globally optimal geometry-first assignment)
+# greedy (YOLO confidence-sorted) or hungarian (globally optimal, geometry-first)
+ev = Evaluation(preds_df, split_df, matching_strategy="greedy")
 ev = Evaluation(preds_df, split_df, matching_strategy="hungarian")
 ```
 
-Use `"hungarian"` for annotation-audit workflows where you want the most
-plausible pairing between predicted and ground-truth boxes.
+`"iou_prior"` (default) pairs boxes by descending IoU and is label-aware,
+mirroring Ultralytics' internal assignment. Use `"greedy"` for confidence-sorted
+YOLO-style matching, or `"hungarian"` for annotation-audit workflows where you
+want the most plausible pairing between predicted and ground-truth boxes.
 
 ---
 
@@ -174,13 +188,12 @@ ev(split="test", calibration_split="val")
   (NMS already applied), you can leave the NMS threshold at `None` — re-applying
   it is just a safety net for cross-class duplicates.
 - **`ap_method="interp"`** — the 101-point trapezoid integral (`np.trapezoid`)
-  is exactly how Ultralytics computes AP.
+  is exactly how Ultralytics computes AP. This is the library default.
 - **`confidence_optimization="global"`** — YOLO applies a single confidence
   threshold to every class, chosen from the mean-F1 curve.
-- For the strictest match on the mAP path, you can also pass
-  `matching_strategy="iou_prior"`, which mirrors Ultralytics' internal
-  IoU-sorted assignment; the default `"greedy"` is also YOLO-style and differs
-  by ~0.006 mAP50 on the fixture data.
+- **`matching_strategy="iou_prior"`** is the default and mirrors Ultralytics'
+  internal IoU-sorted assignment. `"greedy"` is the alternative YOLO-style
+  confidence-sorted rule and differs by ~0.006 mAP50 on the fixture data.
 
 ### Why other parameters are not a problem
 
@@ -193,9 +206,9 @@ recipe above does **not** make the metrics wrong — it just changes the lens:
   `confidence_optimization` have **no effect** on mAP. Those knobs only move the
   single point at which precision/recall/F1 and the confusion matrix are
   reported — every choice yields a valid operating point on the same curve.
-- **The AP method barely matters.** `"continuous"` (exact VOC rectangle area)
-  and `"interp"` (COCO trapezoid) agree to ≤ 0.001 on the fixture; both are
-  standard definitions, so the default `"continuous"` is equally defensible.
+- **The AP method barely matters.** `"interp"` (COCO trapezoid, the default) and
+  `"continuous"` (exact VOC rectangle area) agree to ≤ 0.001 on the fixture; both
+  are standard definitions, so either is defensible.
 - **Per-class confidence can only match or beat global.** Global thresholding is
   the constrained special case of per-class (one shared value vs. the best value
   per class), so `"per_class"` gives an equal-or-higher mean F1 and a finer
@@ -250,6 +263,9 @@ fig, ax = ev.plot_confidence_intervals(
 )
 ```
 
+Output directories (`path` / the parent of `save_path`) are created
+automatically if they don't exist.
+
 ### Error audit
 
 ```python
@@ -271,14 +287,16 @@ Evaluation(
     iou_threshold: float = 0.5,
     preprocess: bool = False,       # deduplicate near-identical GT boxes
     skip_cohen_kappa: bool = True,  # kappa is expensive; enable only when needed
-    matching_strategy: MatchingStrategy = "greedy",
+    matching_strategy: MatchingStrategy = "iou_prior",  # "iou_prior" | "greedy" | "hungarian"
     preprocess_preds_conf_threshold: float | None = None,
     preprocess_preds_nms_containment_threshold: float | None = None,
     preprocess_preds_nms_iou_threshold: float | None = None,
-    ap_method: APMethod = "continuous",                          # "continuous" | "interp"
+    ap_method: APMethod = "interp",                              # "interp" | "continuous"
     confidence_optimization: ConfidenceOptimization = "per_class",  # "per_class" | "global"
 )
 ```
+
+The defaults are YOLO-like (`matching_strategy="iou_prior"`, `ap_method="interp"`).
 
 The image scope for each split is derived automatically from the `split`
 column in `split_df` — no extra list needs to be passed.

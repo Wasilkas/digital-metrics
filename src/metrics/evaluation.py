@@ -70,11 +70,11 @@ class Evaluation:
         iou_threshold: float = 0.5,
         preprocess: bool = False,
         skip_cohen_kappa: bool = True,
-        matching_strategy: MatchingStrategy = "greedy",
+        matching_strategy: MatchingStrategy = "iou_prior",
         preprocess_preds_conf_threshold: float | None = None,
         preprocess_preds_nms_containment_threshold: float | None = None,
         preprocess_preds_nms_iou_threshold: float | None = None,
-        ap_method: APMethod = "continuous",
+        ap_method: APMethod = "interp",
         confidence_optimization: ConfidenceOptimization = "per_class",
     ) -> None:
         """Initialise the Evaluation object.
@@ -85,8 +85,8 @@ class Evaluation:
             iou_threshold: IoU threshold for box matching. Defaults to 0.5.
             preprocess: Remove duplicate GT boxes if True. Defaults to False.
             skip_cohen_kappa: Skip cohen_kappa computation. Defaults to True.
-            matching_strategy: "greedy" (default, YOLO-style), "hungarian",
-                or "iou_prior".
+            matching_strategy: "iou_prior" (default, Ultralytics non-scipy
+                style), "greedy" (YOLO confidence-sorted), or "hungarian".
             preprocess_preds_conf_threshold: Drop predictions whose confidence
                 is strictly below this value before evaluation.  None disables
                 confidence filtering.
@@ -100,9 +100,9 @@ class Evaluation:
                 custom NMS.  The lower-confidence prediction is suppressed when
                 two different-class boxes have IoU >= threshold.  None disables
                 cross-class NMS.
-            ap_method: AP integration method for mAP computation — ``"continuous"``
-                (default, VOC 2010+ rectangle-area) or ``"interp"``
-                (101-point COCO interpolation, Ultralytics-compatible).
+            ap_method: AP integration method for mAP computation — ``"interp"``
+                (default, 101-point COCO interpolation, Ultralytics-compatible)
+                or ``"continuous"`` (VOC 2010+ rectangle-area).
             confidence_optimization: How to choose confidence thresholds when
                 ``find_best_confs`` is enabled or a ``calibration_split`` is
                 used. ``"per_class"`` (default) tunes a separate threshold per
@@ -162,6 +162,23 @@ class Evaluation:
         missing_preds = _REQUIRED_COLS_PREDS - set(preds_df.columns)
         if missing_preds:
             raise ValueError(f"Predictions DataFrame is missing columns: {sorted(missing_preds)}")
+
+        na_conf = int(preds_df["confidence"].isna().sum())
+        if na_conf:
+            raise ValueError(
+                f"Predictions 'confidence' column contains {na_conf} NA value(s); "
+                "every prediction must have a numeric confidence."
+            )
+
+        # Predictions must only use classes present in the ground-truth vocabulary.
+        gt_classes = set(self.classes)
+        pred_classes = set(preds_df["instance_label"].dropna().unique())
+        unknown = pred_classes - gt_classes
+        if unknown:
+            raise ValueError(
+                f"Prediction labels not present in ground truth: {sorted(unknown)}. "
+                f"Known ground-truth classes: {sorted(gt_classes)}."
+            )
 
     def _preprocess(self) -> None:
         """Remove duplicate GT boxes (based on near-identical IoU)."""

@@ -38,6 +38,10 @@ def main() -> None:
         split_df=gt_df,
         iou_threshold=0.3,
         skip_cohen_kappa=True,
+        # Pinned to the documented baseline config (greedy / continuous AP);
+        # the library defaults are now YOLO-like (iou_prior / interp).
+        matching_strategy="greedy",
+        ap_method="continuous",
         preprocess_preds_conf_threshold=0.1,
         preprocess_preds_nms_containment_threshold=0.9,
         preprocess_preds_nms_iou_threshold=0.6,

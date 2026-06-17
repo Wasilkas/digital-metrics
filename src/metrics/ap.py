@@ -160,9 +160,13 @@ def compute_map(
         gt_c = gt_df[gt_df["instance_label"] == c]
         pred_c = preds_df[preds_df["instance_label"] == c]
 
+        # Extract bboxes once, then slice each image's rows by positional index.
+        # Per-group DataFrame column selection (df_img[[...]].values) is the
+        # dominant cost here when a class spans tens of thousands of images.
+        gt_boxes_c = gt_c[[x1, y1, x2, y2]].to_numpy(np.float32)
         gt_by_img: _GtByImg = {
-            str(img_id): df_img[[x1, y1, x2, y2]].values.astype(np.float32)
-            for img_id, df_img in gt_c.groupby("image_name")
+            str(img_id): gt_boxes_c[idx]
+            for img_id, idx in gt_c.groupby("image_name").indices.items()
         }
 
         pred_c = pred_c.sort_values(by="confidence", ascending=False)

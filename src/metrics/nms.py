@@ -82,13 +82,26 @@ def apply_nms(
     Returns:
         DataFrame with suppressed rows removed (original index preserved).
     """
+    if len(preds_df) == 0:
+        return preds_df
+
+    # Extract columns to numpy once; per-image sort_values + column selection
+    # otherwise dominates the loop when there are tens of thousands of images.
+    boxes_all = preds_df[_BBOX_COLS].to_numpy(np.float32)
+    labels_all = preds_df["instance_label"].to_numpy(dtype=object)
+    conf_all = preds_df["confidence"].to_numpy()
+    index_all = preds_df.index.to_numpy()
+
     keep_indices: list[int] = []
 
-    for _, img_df in preds_df.groupby("image_name", sort=False):
-        img_df_sorted = img_df.sort_values("confidence", ascending=False)
-        boxes = img_df_sorted[_BBOX_COLS].values.astype(np.float32)
-        labels = img_df_sorted["instance_label"].values
-        n = len(boxes)
+    for raw_positions in preds_df.groupby("image_name", sort=False).indices.values():
+        # Sort this image's rows by confidence descending (stable, matching the
+        # original per-group sort_values ordering for tied confidences).
+        positions = np.asarray(raw_positions)
+        order = positions[np.argsort(-conf_all[positions], kind="stable")]
+        boxes = boxes_all[order]
+        labels = labels_all[order]
+        n = len(order)
 
         if n == 0:
             continue
@@ -110,6 +123,6 @@ def apply_nms(
                     if iou_mat[i, j] >= cross_class_iou_threshold:
                         suppressed[j] = True
 
-        keep_indices.extend(img_df_sorted.index[~suppressed].tolist())
+        keep_indices.extend(index_all[order[~suppressed]].tolist())
 
     return preds_df.loc[keep_indices]
