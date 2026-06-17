@@ -263,13 +263,9 @@ class Evaluation:
         self.metrics = _compute_metrics_from_matches(
             self._matches, self.classes, self._best_confidences
         )
-        # Hungarian is not supported in the mAP inner loop; fall back to greedy.
-        map_strategy = (
-            "greedy" if self.matching_strategy == "hungarian" else self.matching_strategy
-        )
         compute_map(
             self.gt_df, self._raw_preds_df, self.metrics, split_image_names,
-            method=self._ap_method, strategy=map_strategy,
+            method=self._ap_method, strategy=self.matching_strategy,
         )
         self._compute_cohen_kappa()
         self.cm, self.class_labels = get_confusion_matrix(self._matches, self.classes)

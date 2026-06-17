@@ -58,8 +58,9 @@ src/
     __init__.py
     types.py          # Pydantic models: PredictMatch, Metrics
     iou.py            # IoU matrix computation
-    matching.py       # box matching logic — greedy AND hungarian variants
-    ap.py             # AP / mAP computation (YOLO-style VOC 2010+)
+    assignment.py     # pure box-assignment kernels (greedy/iou_prior/hungarian) on IoU matrices
+    matching.py       # box matching → PredictMatch records; wraps assignment kernels
+    ap.py             # AP / mAP computation; APMethod + MatchingStrategy options; reuses assignment kernels
     confidence.py     # best-confidence search per class
     kappa.py          # Cohen's kappa (pixel-mask method)
     ci.py             # Wilson confidence interval
@@ -122,49 +123,58 @@ Both DataFrames share these columns:
 - **nedobrak** — `1 - recall` (domain term; miss rate)
 - **CI** — Wilson interval on precision / recall
 
-### mAP (YOLO-identical)
+### mAP
 
 mAP is computed **independently** from the per-threshold matching used for P/R/F1.
-It has its own inner loop that re-runs greedy matching for each IoU threshold,
-exactly as Ultralytics does:
+It uses `_raw_preds_df` (unpreprocessed predictions) and runs its own inner matching
+loop for each IoU threshold, mirroring the Ultralytics two-path design:
 
 - Sort all predictions by confidence descending (globally per class).
 - For each IoU threshold in `[0.50, 0.55, …, 0.95]` (10 values):
-  - Match greedily: each prediction claims the highest-IoU unmatched GT.
+  - Match using the configured `strategy` (greedy, iou_prior, or hungarian).
   - Accumulate cumulative TP/FP → precision-recall curve.
-- **AP** — area under P-R curve, VOC 2010+ interpolation:
-  precision envelope (right-to-left max), then sum of rectangle areas at
-  recall change points.
+- **AP** — area under P-R curve, method configurable (see AP Methods below).
 - **mAP50** — AP at IoU = 0.50
 - **mAP75** — AP at IoU = 0.75
 - **mAP50-95** — mean of AP over all 10 thresholds
 
-`_compute_ap` must be byte-for-byte equivalent to
-[`ultralytics/utils/metrics.py::compute_ap`](https://github.com/ultralytics/ultralytics/blob/main/ultralytics/utils/metrics.py).
-
 Classes with **no GT instances in the evaluated split** receive `float("nan")`
-for `ap50`, `ap75`, and `ap50_95` — not `0.0`. This matches how YOLO reports
-mAP50 and allows `nanmean` to correctly exclude absent classes from averages.
+for `ap50`, `ap75`, and `ap50_95` — not `0.0`. This allows `nanmean` to correctly
+exclude absent classes from averages.
+
+**Preprocessing split**: confidence filtering and NMS are applied to `self.preds_df`
+(used for P/R/F1/CM), but `compute_map` always receives `self._raw_preds_df`
+(unfiltered original predictions), matching the Ultralytics design.
+
+### AP Methods (`APMethod`)
+
+Two AP integration methods are available via `ap_method=` on `Evaluation`:
+
+- **`"continuous"`** (default) — VOC 2010+ rectangle-area integration. Prepends
+  `(0, 0)` and appends `(1, 0)` sentinels, right-to-left precision envelope, sums
+  rectangle areas at recall change points.
+- **`"interp"`** — 101-point COCO interpolation, Ultralytics-compatible sentinels
+  (`mpre[0] = 1.0`, `mrec[-1] = recall[-1] + 1e-4`), integrates with `np.trapezoid`
+  over 101 equally-spaced recall points. Returns 0.0 on empty recall.
+
+On the fixture dataset the two methods differ by ≤ 0.001 on mean mAP50.
 
 ### What is NOT identical to YOLO
 
-Precision, recall, F1, and the confusion matrix are computed from
-`_match_boxes` which runs once at a single IoU threshold with optional
-confidence filtering and label-aware TP classification.
-YOLO does not expose per-threshold P/R/F1 in the same way.
-These metrics are intentionally custom (they support domain-specific
-outputs like *perebrak*, *nedobrak*, confidence-interval bars, and
-per-image error auditing). Do not try to make them numerically match
-YOLO's console output.
+Precision, recall, F1, and the confusion matrix are computed from `match_boxes`
+which runs once at a single IoU threshold with optional confidence filtering and
+label-aware TP classification. YOLO does not expose per-threshold P/R/F1 in the
+same way. These metrics are intentionally custom. Do not try to make them
+numerically match YOLO's console output.
 
 ---
 
-## Box Matching — Greedy vs Hungarian
+## Box Matching — Three Strategies
 
-`matching.py` must expose **two** matching strategies behind a common interface:
+`matching.py` exposes three strategies behind a common interface:
 
 ```python
-MatchingStrategy = Literal["greedy", "hungarian"]
+MatchingStrategy = Literal["greedy", "hungarian", "iou_prior"]
 
 def match_boxes(
     gt_df: pd.DataFrame,
@@ -177,47 +187,42 @@ def match_boxes(
 ```
 
 `split_image_names` is an internal parameter populated by `Evaluation._call`
-from `gt_df["image_name"].unique()` (the split-filtered ground truth).
-External callers of `match_boxes` can pass `None` to iterate only over images
-present in `gt_df`.
+from `gt_df["image_name"].unique()`. External callers can pass `None`.
 
 ### Greedy (default, YOLO-style)
 
 1. Sort predictions by confidence descending.
 2. For each prediction, find the highest-IoU unmatched GT.
-3. If IoU ≥ threshold and labels match → TP, mark GT as matched.
-4. Otherwise → FP (store closest GT label for confusion matrix).
+3. If IoU ≥ threshold → GT consumed; labels match → TP, else → FP with GT label.
+4. Otherwise → FP with `gt_label="background"`.
 5. Any unmatched GT → FN.
 
-Greedy is the standard COCO/YOLO protocol. It is fast (O(N·M) per image)
-and consistent with how mAP is computed.
+Used for P/R/F1/CM and (by default) for the mAP inner loop.
 
-### Hungarian (optional, globally optimal)
+### IoU-Prior (Ultralytics non-scipy style)
 
-Uses `scipy.optimize.linear_sum_assignment` on the **negative IoU matrix**
-to find the assignment that maximises total IoU across all pred–GT pairs.
+1. Find all pred-GT pairs where IoU ≥ threshold **and** labels match.
+2. Sort by IoU descending.
+3. Assign greedily: each pred and each GT matched at most once; highest-IoU pair wins.
+4. Unmatched preds → FP (cross-class closest GT recorded for CM if IoU ≥ threshold
+   and labels differ; otherwise `"background"`).
+5. Unmatched GTs → FN.
 
-Key differences from greedy:
-- Assignment is geometry-first, confidence-independent: a low-confidence
-  prediction can still claim a GT if it has better geometric overlap.
-- In dense scenes with overlapping boxes, avoids the greedy "stealing"
-  problem where a high-confidence pred takes a GT away from its best match.
-- Produces different (not better or worse by definition) TP/FP/FN counts
-  and therefore different P/R/F1 — do **not** expect YOLO-equal numbers
-  when using this strategy.
-- More expensive: O(N³) per image via the Hungarian algorithm.
+Key difference from greedy: **confidence plays no role in pairing**. A lower-confidence
+pred with better IoU wins the GT. On the fixture dataset vs greedy: recall drops ~0.08
+(GTs with label-mismatch preds are no longer silently consumed), mAP50 drops ~0.006.
 
-**When to use Hungarian**: annotation auditing workflows where you want
-to find the globally most-plausible pairing between predicted and GT boxes,
-e.g. for the `get_topk_confusions` error-analysis path. The default for
-evaluation runs should remain `"greedy"`.
+**In `compute_map`**: since the loop is already per-class, label matching is
+automatic — iou_prior simply sorts all pairs with IoU ≥ threshold by IoU and
+assigns greedily, keeping the result in confidence-sorted index order for the P-R curve.
 
-Implementation notes:
-- Only pairs with IoU ≥ `iou_threshold` are considered valid matches;
-  rejected pairs become FP/FN even if they were part of the optimal assignment.
-- After assignment, classify each matched pair as TP (labels match) or FP
-  (labels differ); unmatched preds → FP, unmatched GTs → FN.
-- `scipy` is already a project dependency.
+### Hungarian (globally optimal)
+
+Uses `scipy.optimize.linear_sum_assignment` on the negative IoU matrix.
+Geometry-first, confidence-independent. More expensive: O(N³) per image.
+
+**Supported in `compute_map`** — runs `linear_sum_assignment` per image then maps
+results back to confidence-sorted index order for the P-R curve.
 
 ---
 
@@ -228,13 +233,16 @@ Implementation notes:
 - Cover:
   - IoU edge cases (perfect overlap, no overlap, partial)
   - Greedy matching: hand-computed TP/FP/FN on `tiny_dataset`
+  - IoU-prior matching: same `tiny_dataset` counts; discriminating fixture that
+    verifies lower-conf/higher-IoU pred wins the GT (opposite of greedy)
   - Hungarian matching: same `tiny_dataset`, verify total TP ≥ greedy TP
-    (Hungarian is optimal so it can only do equal or better)
   - AP on trivial cases (perfect detector → 1.0; zero-precision → 0.0)
+  - Both AP methods (continuous + interp) parametrised; interp empty-recall guard
+  - `compute_map` strategy divergence: single GT, two competing preds —
+    greedy AP=1.0, iou_prior AP=0.5
   - CI bounds within [0,1], lower ≤ estimate ≤ upper
   - Full `Evaluation` round-trip: check `metrics` keys, `cm` shape,
     and that `ap50` field is populated for each class
-  - `strategy="hungarian"` path runs without error and returns same keys
   - NMS: `filter_by_confidence` drops rows below threshold; `apply_nms`
     suppresses same-class containment and cross-class IoU duplicates
 
@@ -252,7 +260,7 @@ uv run python scripts/eval.py
 
 What it does:
 1. Loads `fixtures/ground_truths_all.csv` and `fixtures/predicts_all.csv`
-2. Applies predictions preprocessing (confidence filter + NMS)
+2. Applies predictions preprocessing (confidence filter + NMS) — affects P/R/F1/CM only
 3. Calibrates confidence thresholds on the `val` split
 4. Evaluates on the `test` split
 5. Writes results to `fixtures/` and prints a per-class summary table
@@ -263,24 +271,29 @@ Current preprocessing settings in the script:
 - `preprocess_preds_nms_containment_threshold=0.9`
 - `preprocess_preds_nms_iou_threshold=0.6`
 
-Baseline results (with above settings):
-- mean P=0.842  R=0.799  F1=0.808  mAP50=0.672  mAP50-95=0.446
+Baseline results (greedy strategy, continuous AP method):
+- mean P=0.842  R=0.799  F1=0.808  mAP50=0.680  mAP50-95=0.452
 - 49 classes, NMS removed 1549/21280 prediction rows
+
+iou_prior strategy results (same preprocessing):
+- mAP50=0.674  mAP50-95=0.449  (mean R drops to 0.717)
 
 ---
 
 ## What Must Be Preserved
 
-All of the following must exist after the refactor:
+All of the following must exist after any refactor:
 
 - `Evaluation(preds_df, split_df, iou_threshold, preprocess, skip_cohen_kappa,
   matching_strategy, preprocess_preds_conf_threshold,
-  preprocess_preds_nms_containment_threshold, preprocess_preds_nms_iou_threshold)`
+  preprocess_preds_nms_containment_threshold, preprocess_preds_nms_iou_threshold,
+  ap_method)`
 - `evaluation(split, find_best_confs, calibration_split)` — main call
 - `evaluation.metrics` — `dict[str, Metrics]`
 - `evaluation.cm`, `evaluation.class_labels`
 - `evaluation.best_confidences` — `dict[str, float]` (per-class optimal threshold)
 - `evaluation.unfiltered_matches` — matches before confidence slicing
+- `evaluation._raw_preds_df` — unpreprocessed predictions (passed to `compute_map`)
 - `evaluation.get_dashboards(save_to_excel, path, save_confusion_matrix)`
 - `evaluation.plot_confidence_intervals(metric, confidence_level, save_path, figsize)`
 - `evaluation.get_topk_confusions(main_class, k)`
@@ -292,3 +305,7 @@ All of the following must exist after the refactor:
 - `nms.filter_by_confidence(preds_df, threshold)` → filtered DataFrame
 - `nms.apply_nms(preds_df, same_class_containment_threshold, cross_class_iou_threshold)`
   → DataFrame with suppressed rows removed
+- `APMethod = Literal["interp", "continuous"]` exported from `metrics`
+- `MatchingStrategy = Literal["greedy", "hungarian", "iou_prior"]` exported from `metrics`
+- `compute_map(gt_df, preds_df, metrics, split_image_names, method, strategy)` —
+  all three strategies supported including `"hungarian"`
