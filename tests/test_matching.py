@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -95,6 +96,74 @@ def test_greedy_bug_fix_no_double_gt_claim() -> None:
     assert _count(matches, "class_a", "FN") == 0
 
 
+_GT_COLS = [
+    "image_name",
+    "instance_label",
+    "bbox_x_tl",
+    "bbox_y_tl",
+    "bbox_x_br",
+    "bbox_y_br",
+]
+_PRED_COLS = [*_GT_COLS, "confidence"]
+
+
+def test_nan_gt_row_does_not_misattribute_match() -> None:
+    """A GT row with a NaN coordinate must not desync matrix columns from gt rows.
+
+    Regression: the class_b prediction perfectly matches the class_b GT, so it
+    must be a TP for class_b — not an FP attributed to the dropped class_a row.
+    """
+    gt_df = pd.DataFrame(
+        [
+            ("img", "class_a", np.nan, 0, 100, 100),  # invalid GT row, dropped
+            ("img", "class_b", 0, 0, 100, 100),
+        ],
+        columns=_GT_COLS,
+    )
+    preds_df = pd.DataFrame(
+        [("img", "class_b", 0, 0, 100, 100, 0.9)],
+        columns=_PRED_COLS,
+    )
+    matches = match_boxes(gt_df, preds_df, iou_threshold=0.5, strategy="greedy")
+    assert _count(matches, "class_b", "TP") == 1
+    assert _count(matches, "class_b", "FP") == 0
+    assert _count(matches, "class_a", "FP") == 0  # no phantom mismatch on dropped row
+
+
+@pytest.mark.parametrize("strategy", ["greedy", "iou_prior", "hungarian"])
+def test_empty_image_predictions_are_fp(strategy: str) -> None:
+    """Empty images (None label, NaN coords placeholder) must process cleanly.
+
+    Predictions on an empty image are FPs; the placeholder must not crash
+    matching, become a phantom GT box, or create a NaN-labelled class.
+    """
+    gt_df = pd.DataFrame(
+        [
+            ("img1", "class_a", 0, 0, 100, 100),
+            ("img2", None, np.nan, np.nan, np.nan, np.nan),  # empty image
+        ],
+        columns=_GT_COLS,
+    )
+    preds_df = pd.DataFrame(
+        [
+            ("img1", "class_a", 0, 0, 100, 100, 0.9),  # TP
+            ("img2", "class_a", 0, 0, 100, 100, 0.5),  # FP on empty image
+        ],
+        columns=_PRED_COLS,
+    )
+    matches = match_boxes(
+        gt_df,
+        preds_df,
+        iou_threshold=0.5,
+        strategy=strategy,
+        split_image_names=["img1", "img2"],
+    )
+    assert set(matches.keys()) == {"class_a"}  # no NaN/None phantom class
+    assert _count(matches, "class_a", "TP") == 1
+    assert _count(matches, "class_a", "FP") == 1
+    assert _count(matches, "class_a", "FN") == 0
+
+
 def test_iou_prior_returns_same_keys(tiny_dataset: tuple[pd.DataFrame, pd.DataFrame]) -> None:
     gt_df, preds_df = tiny_dataset
     greedy = match_boxes(gt_df, preds_df, iou_threshold=0.5, strategy="greedy")
@@ -125,16 +194,30 @@ def iou_prior_vs_greedy_dataset() -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     gt_df = pd.DataFrame(
         [("img", "cls", 0, 0, 100, 100, "test")],
-        columns=["image_name", "instance_label", "bbox_x_tl", "bbox_y_tl",
-                 "bbox_x_br", "bbox_y_br", "split"],
+        columns=[
+            "image_name",
+            "instance_label",
+            "bbox_x_tl",
+            "bbox_y_tl",
+            "bbox_x_br",
+            "bbox_y_br",
+            "split",
+        ],
     )
     preds_df = pd.DataFrame(
         [
-            ("img", "cls", 0, 0, 80, 100, 0.9),   # IoU = 0.80, high conf
+            ("img", "cls", 0, 0, 80, 100, 0.9),  # IoU = 0.80, high conf
             ("img", "cls", 0, 0, 100, 100, 0.5),  # IoU = 1.00, low conf
         ],
-        columns=["image_name", "instance_label", "bbox_x_tl", "bbox_y_tl",
-                 "bbox_x_br", "bbox_y_br", "confidence"],
+        columns=[
+            "image_name",
+            "instance_label",
+            "bbox_x_tl",
+            "bbox_y_tl",
+            "bbox_x_br",
+            "bbox_y_br",
+            "confidence",
+        ],
     )
     return gt_df, preds_df
 

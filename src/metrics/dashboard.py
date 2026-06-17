@@ -43,6 +43,9 @@ def get_dashboards(
     Returns:
         (devs, dtrk) — full analyst dashboard and production dashboard.
     """
+    # Create the output directory up front: the CI plots below are saved into it.
+    os.makedirs(path, exist_ok=True)
+
     for metric_name in ("recall", "precision", "perebrak", "nedobrak"):
         plot_confidence_intervals(
             metrics=metrics,
@@ -109,7 +112,6 @@ def get_dashboards(
     dtrk = dtrk.loc[:, ~dtrk.columns.str.contains("^Unnamed")].sort_index()
 
     logger.info("Saving results...")
-    os.makedirs(path, exist_ok=True)
 
     if save_confusion_matrix:
         cm_df = pd.DataFrame(cm, index=class_labels, columns=class_labels)
