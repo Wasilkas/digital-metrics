@@ -5,6 +5,8 @@ Object detection evaluation library. Computes per-class detection metrics
 confidence intervals) from pandas DataFrames of ground-truth and predictions.
 Outputs `Metrics` objects, a confusion matrix, Excel dashboards, and CI plots.
 
+> 🇷🇺 Русская версия: [README.ru.md](README.ru.md)
+
 ---
 
 ## Installation
