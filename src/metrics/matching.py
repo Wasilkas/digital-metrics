@@ -75,12 +75,18 @@ def match_boxes(
         gt = gt_df[gt_df["image_name"] == image_name]
         preds = preds_df[preds_df["image_name"] == image_name]
 
+        # Empty images carry placeholder GT rows (None label, NaN bbox coords)
+        # purely to keep the image in scope so predictions on it count as FPs.
+        # Drop them here so they never form phantom GT boxes/FNs and so the IoU
+        # matrix columns stay aligned with the gt rows used in _build_matches.
+        gt = gt.dropna(subset=_BBOX_COLS)
+
         if strategy == "greedy":
             # Greedy consumes the highest-IoU GT in confidence order, so the
             # IoU matrix must be built from confidence-sorted predictions.
             preds = preds.sort_values(by="confidence", ascending=False)
 
-        gt_bboxes = gt[_BBOX_COLS].dropna().values.astype(np.float32)
+        gt_bboxes = gt[_BBOX_COLS].values.astype(np.float32)
         pred_bboxes = preds[_BBOX_COLS].values.astype(np.float32)
         iou_matrix = compute_iou_matrix(pred_bboxes, gt_bboxes)
 
