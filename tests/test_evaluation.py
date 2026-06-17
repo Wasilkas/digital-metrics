@@ -67,6 +67,28 @@ def test_validate_df_raises_on_missing_gt_column(
         ev(split="all")
 
 
+def test_validate_df_raises_on_na_confidence(
+    tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    gt_df, preds_df = tiny_dataset
+    preds_bad = preds_df.copy()
+    preds_bad.loc[0, "confidence"] = float("nan")
+    ev = Evaluation(preds_bad, gt_df, iou_threshold=0.5)
+    with pytest.raises(ValueError, match="confidence.*NA"):
+        ev(split="all")
+
+
+def test_validate_df_raises_on_unknown_pred_class(
+    tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    gt_df, preds_df = tiny_dataset
+    preds_bad = preds_df.copy()
+    preds_bad.loc[0, "instance_label"] = "class_z"  # not in GT vocabulary
+    ev = Evaluation(preds_bad, gt_df, iou_threshold=0.5)
+    with pytest.raises(ValueError, match="class_z"):
+        ev(split="all")
+
+
 def test_hungarian_keys_match_greedy(
     tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
 ) -> None:
