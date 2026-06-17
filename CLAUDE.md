@@ -61,7 +61,7 @@ src/
     assignment.py     # pure box-assignment kernels (greedy/iou_prior/hungarian) on IoU matrices
     matching.py       # box matching → PredictMatch records; wraps assignment kernels
     ap.py             # AP / mAP computation; APMethod + MatchingStrategy options; reuses assignment kernels
-    confidence.py     # best-confidence search per class
+    confidence.py     # best-confidence search: per-class + global (YOLO-style) thresholds
     kappa.py          # Cohen's kappa (pixel-mask method)
     ci.py             # Wilson confidence interval
     evaluation.py     # Evaluation orchestrator class
@@ -76,6 +76,7 @@ tests/
   test_ci.py
   test_evaluation.py
   test_nms.py
+  test_confidence.py
 scripts/
   eval.py             # local evaluation script (see "Local Evaluation" section)
 fixtures/
@@ -287,7 +288,7 @@ All of the following must exist after any refactor:
 - `Evaluation(preds_df, split_df, iou_threshold, preprocess, skip_cohen_kappa,
   matching_strategy, preprocess_preds_conf_threshold,
   preprocess_preds_nms_containment_threshold, preprocess_preds_nms_iou_threshold,
-  ap_method)`
+  ap_method, confidence_optimization)`
 - `evaluation(split, find_best_confs, calibration_split)` — main call
 - `evaluation.metrics` — `dict[str, Metrics]`
 - `evaluation.cm`, `evaluation.class_labels`
@@ -307,5 +308,8 @@ All of the following must exist after any refactor:
   → DataFrame with suppressed rows removed
 - `APMethod = Literal["interp", "continuous"]` exported from `metrics`
 - `MatchingStrategy = Literal["greedy", "hungarian", "iou_prior"]` exported from `metrics`
+- `ConfidenceOptimization = Literal["per_class", "global"]` exported from `metrics`
+  — `"global"` selects a single YOLO-style threshold (max mean per-class F1) shared
+  by all classes; `"per_class"` (default) tunes one threshold per class
 - `compute_map(gt_df, preds_df, metrics, split_image_names, method, strategy)` —
   all three strategies supported including `"hungarian"`
