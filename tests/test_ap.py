@@ -299,13 +299,37 @@ def test_compute_map_strategy_greedy_vs_iou_prior() -> None:
     assert m_iou["cat"].ap50 == pytest.approx(0.5, abs=1e-3)
 
 
-def test_compute_map_strategy_hungarian_raises() -> None:
+def test_compute_map_strategy_hungarian_perfect() -> None:
+    """Hungarian matching on a perfect detector yields AP=1.0."""
+    gt, preds = _make_perfect_dataset()
+    metrics: dict[str, Metrics] = {"cat": Metrics()}
+    compute_map(gt, preds, metrics, strategy="hungarian")
+    assert metrics["cat"].ap50 == pytest.approx(1.0, abs=1e-6)
+    assert metrics["cat"].ap75 == pytest.approx(1.0, abs=1e-6)
+
+
+def test_compute_map_strategy_hungarian_iou_optimal() -> None:
+    """Hungarian picks the higher-IoU pred regardless of confidence (like iou_prior).
+
+    One GT; pred_a has higher confidence but lower IoU than pred_b.
+      greedy:    pred_a wins GT (confidence-sorted first) → TP at high conf → AP=1.0
+      iou_prior: pred_b wins GT (higher IoU)              → FP at high conf → AP=0.5
+      hungarian: pred_b wins GT (globally optimal)        → FP at high conf → AP=0.5
+    """
     cols_gt = ["image_name", "instance_label", "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "split"]
     gt = pd.DataFrame([("img", "cat", 0, 0, 100, 100, "test")], columns=cols_gt)
     cols_p = ["image_name", "instance_label", "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "confidence"]
-    preds = pd.DataFrame([("img", "cat", 0, 0, 100, 100, 0.9)], columns=cols_p)
-    with pytest.raises(ValueError, match="hungarian"):
-        compute_map(gt, preds, {"cat": Metrics()}, strategy="hungarian")
+    preds = pd.DataFrame(
+        [
+            ("img", "cat", 0, 0, 80, 100, 0.9),   # pred_a: IoU=0.80, high conf
+            ("img", "cat", 0, 0, 100, 100, 0.5),  # pred_b: IoU=1.00, low conf
+        ],
+        columns=cols_p,
+    )
+
+    m_hungarian: dict[str, Metrics] = {"cat": Metrics()}
+    compute_map(gt, preds, m_hungarian, strategy="hungarian")
+    assert m_hungarian["cat"].ap50 == pytest.approx(0.5, abs=1e-3)
 
 
 def test_ap_interp_lower_than_continuous_for_imperfect_curve() -> None:
