@@ -1,7 +1,36 @@
 import pandas as pd
 import pytest
+from loguru import logger
 
 from metrics import Evaluation
+
+_BBOX = ["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
+_GT_COLS = ["image_name", "instance_label", *_BBOX, "split"]
+_PRED_COLS = ["image_name", "instance_label", *_BBOX, "confidence"]
+
+
+def _capture_warnings(fn: object) -> list[str]:
+    """Run ``fn`` and return the WARNING-level loguru messages it emits."""
+    msgs: list[str] = []
+    handler_id = logger.add(msgs.append, level="WARNING")
+    try:
+        fn()  # type: ignore[operator]
+    finally:
+        logger.remove(handler_id)
+    return [str(m) for m in msgs]
+
+
+def _perfect_dataset() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Every prediction is an exact-match TP → optimal threshold keeps all."""
+    gt = pd.DataFrame(
+        [("i1", "a", 0, 0, 10, 10, "test"), ("i2", "a", 0, 0, 10, 10, "test")],
+        columns=_GT_COLS,
+    )
+    preds = pd.DataFrame(
+        [("i1", "a", 0, 0, 10, 10, 0.9), ("i2", "a", 0, 0, 10, 10, 0.4)],
+        columns=_PRED_COLS,
+    )
+    return gt, preds
 
 
 def test_greedy_round_trip(tiny_dataset: tuple[pd.DataFrame, pd.DataFrame]) -> None:
@@ -206,3 +235,70 @@ def test_calibration_split_overlap_raises(
     ev = Evaluation(preds_df, leaked_gt, iou_threshold=0.5)
     with pytest.raises(ValueError, match="shares"):
         ev(split="test", calibration_split="val")
+
+
+# ---------------------------------------------------------------------------
+# Unoptimized-threshold warning (threshold == minimum prediction confidence)
+# ---------------------------------------------------------------------------
+
+
+def test_per_class_unoptimized_threshold_warns() -> None:
+    gt, preds = _perfect_dataset()
+    ev = Evaluation(preds, gt, iou_threshold=0.5, confidence_optimization="per_class")
+    msgs = _capture_warnings(lambda: ev(split="test", find_best_confs=True))
+
+    assert ev.best_confidences["a"] == pytest.approx(0.4)  # the minimum confidence
+    assert any("had no effect" in m for m in msgs)
+
+
+def test_global_unoptimized_threshold_warns() -> None:
+    gt, preds = _perfect_dataset()
+    ev = Evaluation(preds, gt, iou_threshold=0.5, confidence_optimization="global")
+    msgs = _capture_warnings(lambda: ev(split="test", find_best_confs=True))
+
+    assert any("Global confidence threshold" in m for m in msgs)
+
+
+def test_optimized_threshold_does_not_warn() -> None:
+    # Two TPs (conf 0.9/0.8) plus two low-confidence background FPs (0.3/0.2): the
+    # F1 optimum drops the FPs, so the threshold (0.8) sits above the minimum (0.2).
+    gt = pd.DataFrame(
+        [("i1", "a", 0, 0, 10, 10, "test"), ("i2", "a", 0, 0, 10, 10, "test")],
+        columns=_GT_COLS,
+    )
+    preds = pd.DataFrame(
+        [
+            ("i1", "a", 0, 0, 10, 10, 0.9),  # TP
+            ("i2", "a", 0, 0, 10, 10, 0.8),  # TP
+            ("i1", "a", 500, 500, 510, 510, 0.3),  # FP (no GT there)
+            ("i2", "a", 500, 500, 510, 510, 0.2),  # FP
+        ],
+        columns=_PRED_COLS,
+    )
+    ev = Evaluation(preds, gt, iou_threshold=0.5, confidence_optimization="per_class")
+    msgs = _capture_warnings(lambda: ev(split="test", find_best_confs=True))
+
+    assert ev.best_confidences["a"] == pytest.approx(0.8)  # above the 0.2 minimum
+    assert not any("had no effect" in m for m in msgs)
+
+
+# ---------------------------------------------------------------------------
+# weights_path: predict-or-raise when preds_df is None
+# ---------------------------------------------------------------------------
+
+
+def test_no_preds_no_weights_raises(split_dataset: tuple[pd.DataFrame, pd.DataFrame]) -> None:
+    gt_df, _ = split_dataset
+    ev = Evaluation(None, gt_df, iou_threshold=0.5)
+    with pytest.raises(ValueError, match="no predictions to score"):
+        ev(split="test")
+
+
+def test_both_preds_and_weights_warns_at_init(
+    tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    gt_df, preds_df = tiny_dataset
+    msgs = _capture_warnings(
+        lambda: Evaluation(preds_df, gt_df, iou_threshold=0.5, weights_path="best.pt")
+    )
+    assert any("ignoring weights_path" in m for m in msgs)

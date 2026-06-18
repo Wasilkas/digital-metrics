@@ -14,6 +14,10 @@ class PredictMatch(BaseModel):
     pred_index: int
     gt_index: int
     confidence: float
+    iou: float | None = None
+    """IoU between the prediction and the ground-truth box it is associated with
+    (``gt_index``).  ``None`` when there is no associated box: a ``background``
+    false positive (``gt_index == -1``) or a false negative (``pred_index == -1``)."""
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -24,6 +28,28 @@ class PredictMatch(BaseModel):
             return "FN"
         else:
             return "FP"
+
+
+class DetectionMetrics(BaseModel):
+    """Per-class detection metrics produced by an external backend.
+
+    Returned by :func:`metrics.compute_detection_metrics` for either backend
+    (``ultralytics`` or ``torchmetrics``).
+
+    ``precision``/``recall``/``f1`` are read at IoU 0.50 at the operating point
+    that maximises F1 (the way YOLO reads its headline numbers); the exact curve
+    and operating point are backend-specific (Ultralytics' 1000-point smoothed
+    curve at a single global threshold vs. torchmetrics' 101-point COCO curve per
+    class). ``ap50``/``ap75`` are AP at IoU 0.50/0.75 and ``ap50_95`` is the mean
+    AP over the ten COCO IoU thresholds (0.50…0.95).
+    """
+
+    precision: float
+    recall: float
+    f1: float
+    ap50: float
+    ap75: float
+    ap50_95: float
 
 
 class Metrics(BaseModel):

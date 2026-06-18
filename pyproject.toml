@@ -27,6 +27,15 @@ dependencies = [
     "openpyxl>=3.1",
 ]
 
+[project.optional-dependencies]
+# External metric backends behind metrics.compute_detection_metrics. Both are
+# heavy (pull in torch) so they are kept out of the core install.
+# YOLO-comparable P/R/F1/AP via Ultralytics' own ap_per_class.
+ultralytics = ["ultralytics>=8.3"]
+# General COCO mAP via torchmetrics' MeanAveragePrecision (also needs
+# torchvision + pycocotools, supplied by the [detection] extra).
+torchmetrics = ["torchmetrics[detection]>=1.0"]
+
 [project.urls]
 Homepage = "https://github.com/Wasilkas/digital-metrics"
 Repository = "https://github.com/Wasilkas/digital-metrics"
@@ -47,13 +56,13 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "FBT"]
 
 [tool.mypy]
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["scipy.*", "sklearn.*", "tqdm.*"]
+module = ["scipy.*", "sklearn.*", "tqdm.*", "ultralytics.*", "torch.*", "torchmetrics.*"]
 ignore_missing_imports = true
 
 [dependency-groups]

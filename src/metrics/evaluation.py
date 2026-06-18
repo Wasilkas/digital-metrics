@@ -24,6 +24,7 @@ from .kappa import compute_kappa
 from .matching import MatchingStrategy, match_boxes
 from .nms import apply_nms, filter_by_confidence
 from .types import Metrics, PredictMatch
+from .yolo_predict import ImageNameMode, predict_on_images
 
 _REQUIRED_COLS_GT = {
     "image_name",
@@ -65,9 +66,10 @@ class Evaluation:
 
     def __init__(
         self,
-        preds_df: pd.DataFrame | str,
+        preds_df: pd.DataFrame | str | None,
         split_df: pd.DataFrame | str,
         iou_threshold: float = 0.5,
+        *,
         preprocess: bool = False,
         skip_cohen_kappa: bool = True,
         matching_strategy: MatchingStrategy = "iou_prior",
@@ -76,11 +78,15 @@ class Evaluation:
         preprocess_preds_nms_iou_threshold: float | None = None,
         ap_method: APMethod = "interp",
         confidence_optimization: ConfidenceOptimization = "per_class",
+        weights_path: str | None = None,
     ) -> None:
         """Initialise the Evaluation object.
 
         Args:
-            preds_df: Predictions DataFrame or path to CSV.
+            preds_df: Predictions DataFrame or path to CSV. Pass ``None`` to start
+                without predictions and generate them from a YOLO model via
+                :meth:`predict_to_dataframe` (which reads image paths from
+                ``split_df['image_path']``).
             split_df: Ground-truth split DataFrame or path to CSV.
             iou_threshold: IoU threshold for box matching. Defaults to 0.5.
             preprocess: Remove duplicate GT boxes if True. Defaults to False.
@@ -109,6 +115,11 @@ class Evaluation:
                 class to maximise that class's F1. ``"global"`` mirrors YOLO and
                 picks a single threshold, shared by every class, that maximises
                 the mean per-class F1.
+            weights_path: Optional path to YOLO weights. When ``preds_df`` is
+                ``None``, predictions are generated from these weights the first
+                time the evaluation runs (over ``split_df['image_path']``). If
+                ``preds_df`` is ``None`` and no weights are given, calling the
+                evaluation raises ``ValueError``.
         """
         self.suffix = "default"
 
@@ -116,6 +127,22 @@ class Evaluation:
             preds_df = pd.read_csv(preds_df)
         if isinstance(split_df, str):
             split_df = pd.read_csv(split_df)
+
+        self._weights_path = weights_path
+        self._has_predictions = preds_df is not None
+        if not self._has_predictions and weights_path is not None:
+            logger.info(
+                f"No predictions provided; they will be generated from weights "
+                f"'{weights_path}' when the evaluation runs."
+            )
+        if self._has_predictions and weights_path is not None:
+            logger.warning(
+                "Both preds_df and weights_path were provided; using preds_df and "
+                "ignoring weights_path."
+            )
+        if preds_df is None:
+            # Placeholder until predictions are generated (predict_to_dataframe).
+            preds_df = pd.DataFrame(columns=sorted(_REQUIRED_COLS_PREDS))
 
         self.preds_df: pd.DataFrame = preds_df.reset_index(drop=True)
         self._raw_preds_df: pd.DataFrame = self.preds_df.copy()
@@ -224,6 +251,76 @@ class Evaluation:
                 f"(containment={cont}, iou={iou})."
             )
 
+    def predict_to_dataframe(
+        self,
+        weights: str,
+        *,
+        split: str | None = None,
+        conf: float = 0.001,
+        iou: float = 0.7,
+        imgsz: int = 640,
+        device: str | None = None,
+        image_name: ImageNameMode = "name",
+    ) -> pd.DataFrame:
+        """Generate predictions from a YOLO model over the ground-truth images.
+
+        The image source is ``split_df['image_path']`` (full path to each image),
+        so this needs no ``data.yaml``. ``image_name`` is the last part of that
+        path, matching the ground-truth ``image_name``. The result is stored as
+        ``self.preds_df`` / ``self._raw_preds_df`` (and re-preprocessed if
+        confidence/NMS thresholds were configured), so the pipeline can continue
+        straight into ``evaluation()``.
+
+        Args:
+            weights: Path to Ultralytics model weights (``.pt``).
+            split: Restrict inference to this split's images (``"val"`` / ``"test"``);
+                ``None`` runs over every image in ``split_df``.
+            conf: Inference confidence threshold (default ``0.001`` keeps the full
+                P-R curve available downstream).
+            iou: Inference NMS IoU threshold.
+            imgsz: Inference image size.
+            device: Torch device (e.g. ``"0"``, ``"cpu"``); ``None`` auto-selects.
+            image_name: ``image_name`` format — ``"name"`` (filename with
+                extension, default), ``"stem"`` or ``"path"``.
+
+        Returns:
+            The generated predictions DataFrame (also available as ``self.preds_df``).
+
+        Raises:
+            ValueError: If ``split_df`` lacks an ``image_path`` column or has no
+                image paths for the requested split.
+            ImportError: If the optional ``ultralytics`` dependency is missing.
+        """
+        gt = self.split_df if split is None else self.split_df.query("split == @split")
+        if "image_path" not in gt.columns:
+            raise ValueError(
+                "predict_to_dataframe requires an 'image_path' column in split_df "
+                "(full path to each image); none was found."
+            )
+        image_paths = gt["image_path"].dropna().unique().tolist()
+        if not image_paths:
+            raise ValueError(f"No 'image_path' values found in split_df (split={split!r}).")
+
+        preds = predict_on_images(
+            weights,
+            image_paths,
+            conf=conf,
+            iou=iou,
+            imgsz=imgsz,
+            device=device,
+            image_name=image_name,
+        )
+        self.preds_df = preds.reset_index(drop=True)
+        self._raw_preds_df = self.preds_df.copy()
+        self._has_predictions = True
+        if (
+            self._preds_conf_threshold is not None
+            or self._preds_nms_containment_threshold is not None
+            or self._preds_nms_iou_threshold is not None
+        ):
+            self._preprocess_preds()
+        return self.preds_df
+
     @property
     def best_confidences(self) -> dict[str, float]:
         return self._best_confidences
@@ -231,6 +328,7 @@ class Evaluation:
     def __call__(
         self,
         split: str = "all",
+        *,
         find_best_confs: bool = True,
         calibration_split: str | None = None,
     ) -> None:
@@ -247,19 +345,39 @@ class Evaluation:
                 This is the recommended workflow when a held-out validation set
                 is available: calibrate on val, report metrics on test.
         """
-        self._call(split, find_best_confs, calibration_split)
+        self._call(split, find_best_confs=find_best_confs, calibration_split=calibration_split)
 
     def _define_gt(self, split: str = "all") -> None:
         self.gt_df = (
             deepcopy(self.split_df) if split == "all" else self.split_df.query("split == @split")
         )
 
+    def _ensure_predictions(self) -> None:
+        """Generate predictions from ``weights_path`` when none were provided.
+
+        Raises:
+            ValueError: If no predictions exist and no ``weights_path`` was given.
+        """
+        if self._has_predictions:
+            return
+        if self._weights_path is None:
+            raise ValueError(
+                "Evaluation has no predictions to score: preds_df was None and no "
+                "weights_path was provided. Pass preds_df, set weights_path=..., or "
+                "call predict_to_dataframe() before running the evaluation."
+            )
+        logger.info(f"Generating predictions from weights '{self._weights_path}'...")
+        # Predict over every image in split_df so any eval/calibration split is covered.
+        self.predict_to_dataframe(self._weights_path)
+
     def _call(
         self,
         split: str = "all",
+        *,
         find_best_confs: bool = True,
         calibration_split: str | None = None,
     ) -> None:
+        self._ensure_predictions()
         self._define_gt(split)
         assert self.gt_df is not None
 
@@ -369,8 +487,54 @@ class Evaluation:
         """
         if self._confidence_optimization == "global":
             threshold = find_best_global_confidence(matches, self.classes)
-            return {c: threshold for c in self.classes}
-        return find_best_confidences(matches, self.classes)
+            thresholds = {c: threshold for c in self.classes}
+        else:
+            thresholds = find_best_confidences(matches, self.classes)
+        self._warn_if_thresholds_unoptimized(matches, thresholds)
+        return thresholds
+
+    def _warn_if_thresholds_unoptimized(
+        self, matches: dict[str, list[PredictMatch]], thresholds: dict[str, float]
+    ) -> None:
+        """Warn when an optimised threshold keeps every detection.
+
+        A threshold equal to the minimum prediction confidence does not discard
+        anything, so confidence optimisation had no effect — typically because the
+        predictions match the ground truth so well that the optimal cut is none
+        (e.g. identical pred/GT boxes, where the F1-optimal threshold is the floor).
+        """
+
+        def min_confidence(records: list[PredictMatch]) -> float | None:
+            confs = [m.confidence for m in records if m.type != "FN"]
+            return min(confs) if confs else None
+
+        if self._confidence_optimization == "global":
+            all_confs = [
+                m.confidence for recs in matches.values() for m in recs if m.type != "FN"
+            ]
+            if not all_confs:
+                return
+            global_min = min(all_confs)
+            threshold = next(iter(thresholds.values()), 0.0)
+            if threshold <= global_min:
+                logger.warning(
+                    f"Global confidence threshold ({threshold:.6g}) equals the minimum "
+                    f"prediction confidence ({global_min:.6g}); it keeps every detection, "
+                    "so confidence optimisation had no effect (predictions may match GT "
+                    "closely)."
+                )
+            return
+
+        for c in self.classes:
+            mc = min_confidence(matches.get(c, []))
+            if mc is None:
+                continue
+            if thresholds.get(c, 0.0) <= mc:
+                logger.warning(
+                    f"Confidence threshold for class '{c}' ({thresholds[c]:.6g}) equals the "
+                    f"minimum prediction confidence ({mc:.6g}); it keeps every detection, so "
+                    "confidence optimisation had no effect for this class."
+                )
 
     def _compute_cohen_kappa(self) -> None:
         assert self.gt_df is not None
@@ -415,6 +579,7 @@ class Evaluation:
 
     def get_dashboards(
         self,
+        *,
         save_to_excel: bool = True,
         path: str = "metrics/",
         save_confusion_matrix: bool = True,
@@ -501,7 +666,7 @@ class Evaluation:
         )
 
     def get_dfs_visualization(
-        self, find_best_confs: bool = True
+        self, *, find_best_confs: bool = True
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Return GT and preds DataFrames annotated with prediction type.
 

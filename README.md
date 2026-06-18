@@ -17,7 +17,9 @@ uv pip install git+https://github.com/Wasilkas/digital-metrics
 pip install git+https://github.com/Wasilkas/digital-metrics
 ```
 
-Requires Python 3.11+.
+Requires Python 3.11+. The core install is `torch`-free; the optional
+`ultralytics` / `torchmetrics` backends are extras — see
+[External metrics backends](#external-metrics-backends-single-entry-point).
 
 ---
 
@@ -35,6 +37,7 @@ Both DataFrames share the same column names:
 | `bbox_y_br` | `float` | ✓ | ✓ | Bounding-box bottom-right y |
 | `split` | `str` | ✓ | — | `"train"` / `"val"` / `"test"` |
 | `confidence` | `float` | — | ✓ | Detection score in `[0, 1]` |
+| `image_path` | `str` | opt | — | Full path to the image file; required **only** by `Evaluation.predict_to_dataframe` (YOLO inference) |
 
 ### Input validation
 
@@ -116,6 +119,11 @@ ev(split="test", calibration_split="val")
 
 Both modes honour the val-calibration workflow: thresholds are found on the
 calibration split and applied to the evaluation split.
+
+> If a chosen threshold equals the **minimum** prediction confidence, the cut
+> keeps every detection — optimisation had no effect (e.g. predictions matching
+> the ground truth so closely that the F1-optimal cut is the floor). A `WARNING`
+> is logged per class (or once, for `"global"`) when this happens.
 
 ---
 
@@ -223,6 +231,104 @@ often more favourable view while keeping mAP exactly as comparable.
 
 ---
 
+## External metrics backends (single entry point)
+
+To get numbers from an established metrics library — instead of this library's
+own `Evaluation` path — use the single entry point `compute_detection_metrics`.
+It scores the same GT/prediction DataFrames through one of two optional backends
+and returns `dict[str, DetectionMetrics]` (per-class
+`precision / recall / f1 / ap50 / ap75 / ap50_95`):
+
+```python
+from metrics import compute_detection_metrics
+
+gt_df = split_df[split_df["split"] == "test"]
+
+# YOLO-comparable (Ultralytics' own ap_per_class)
+yolo = compute_detection_metrics(gt_df, preds_df, backend="ultralytics")
+
+# General COCO mAP (torchmetrics' MeanAveragePrecision)
+coco = compute_detection_metrics(gt_df, preds_df, backend="torchmetrics")
+
+for cls, m in yolo.items():
+    print(f"{cls}: P={m.precision:.3f} R={m.recall:.3f} F1={m.f1:.3f} "
+          f"mAP50={m.ap50:.3f} mAP50-95={m.ap50_95:.3f}")
+```
+
+- **`backend="ultralytics"`** (default) — YOLO-comparable. Boxes are matched and
+  scored by Ultralytics' own `ap_per_class`, so AP equals `model.val()`. P/R/F1
+  are read at IoU 0.50 at the single global max-mean-F1 operating point.
+- **`backend="torchmetrics"`** — general COCO mAP via torchmetrics'
+  `MeanAveragePrecision` (pycocotools). AP is torchmetrics' own
+  `map_50 / map_75 / map` per class; P/R/F1 are derived off its IoU-0.50
+  precision–recall curve at the per-class max-F1 point (torchmetrics has no
+  headline P/R/F1 of its own).
+
+Both backends score only classes that have at least one ground-truth box in the
+split. Each is a heavy **optional extra** (each pulls in `torch`), imported
+lazily — the core install stays torch-free. Install whichever you need:
+
+```bash
+# from a clone
+uv sync --extra ultralytics
+uv sync --extra torchmetrics
+
+# or directly
+uv pip install "digital-metrics[ultralytics] @ git+https://github.com/Wasilkas/digital-metrics"
+uv pip install "digital-metrics[torchmetrics] @ git+https://github.com/Wasilkas/digital-metrics"
+```
+
+Calling a backend without its extra raises `ImportError` with an install hint; an
+unknown `backend` raises `ValueError`. The underlying functions
+(`compute_ultralytics_metrics`, `compute_torchmetrics_metrics`) are also public
+and callable directly. `YoloMetrics` is kept as a backward-compatible alias of
+`DetectionMetrics`.
+
+> These backends are the apples-to-apples comparison path. This library's own
+> `Evaluation` P/R/F1 are intentionally custom and are **not** meant to match
+> YOLO's console output numerically (see the note above).
+
+On the fixture data the three ways agree on mAP to ~0.002–0.006 but differ on
+P/R/F1 by up to ~0.05 — a structural consequence of selecting and reading a single
+operating point off the same curve in different ways (per-class vs. one global
+threshold; raw vs. COCO-envelope precision). See
+[docs/why_prf1_differs.md](docs/why_prf1_differs.md) for the explanation and plots.
+
+---
+
+## From YOLO weights to predictions
+
+If you have an Ultralytics model rather than a predictions table, run inference
+straight from the ground-truth DataFrame — `Evaluation.predict_to_dataframe`
+closes the eval pipeline at the front, no `data.yaml` needed:
+
+```python
+from metrics import Evaluation
+
+# Ground truth must carry an `image_path` column (full path to each image).
+# Construct with preds_df=None, then generate predictions from the model:
+ev = Evaluation(None, "ground_truth.csv", iou_threshold=0.5)
+ev.predict_to_dataframe("best.pt", split="val")   # fills ev.preds_df
+ev(split="val")                                    # evaluate as usual
+```
+
+- The image source is `split_df["image_path"]`; `image_name` is the last part of
+  that path (`Path(image_path).name`), so predictions join back to the ground
+  truth automatically. `instance_label` comes from the model's own class names;
+  boxes are pixel `xyxy`.
+- The model runs at `conf=0.001`, `iou=0.7` by default (YOLO val settings) so the
+  full precision-recall curve is available downstream; raise `conf=` to pre-filter.
+- `predict_to_dataframe` also **returns** the predictions DataFrame, so you can
+  save it (`df.to_csv(...)`) or feed it to
+  [`compute_detection_metrics`](#external-metrics-backends-single-entry-point).
+- `image_name=` selects the `image_name` format (`"name"` filename+ext, the
+  default; `"stem"`; or full `"path"`) — match it to your ground-truth `image_name`.
+
+Requires the `ultralytics` extra (imported lazily; the core install stays
+torch-free).
+
+---
+
 ## Outputs
 
 ### `ev.metrics` — `dict[str, Metrics]`
@@ -244,6 +350,8 @@ Each `Metrics` object exposes:
 | `confidence` | Best confidence threshold for this class |
 | `precision_ci_lower/upper` | Wilson 95 % CI on precision |
 | `recall_ci_lower/upper` | Wilson 95 % CI on recall |
+| `perebrak_ci_lower/upper` | CI on perebrak (1 − precision) |
+| `nedobrak_ci_lower/upper` | CI on nedobrak (1 − recall) |
 
 ### Dashboards and plots
 
@@ -282,8 +390,8 @@ gt_vis, pred_vis = ev.get_dfs_visualization()
 
 ```python
 Evaluation(
-    preds_df: pd.DataFrame,
-    split_df: pd.DataFrame,
+    preds_df: pd.DataFrame | str | None,   # DataFrame, CSV path, or None to predict first
+    split_df: pd.DataFrame | str,
     iou_threshold: float = 0.5,
     preprocess: bool = False,       # deduplicate near-identical GT boxes
     skip_cohen_kappa: bool = True,  # kappa is expensive; enable only when needed
@@ -293,10 +401,25 @@ Evaluation(
     preprocess_preds_nms_iou_threshold: float | None = None,
     ap_method: APMethod = "interp",                              # "interp" | "continuous"
     confidence_optimization: ConfidenceOptimization = "per_class",  # "per_class" | "global"
+    weights_path: str | None = None,   # YOLO weights to auto-predict from when preds_df is None
 )
 ```
 
 The defaults are YOLO-like (`matching_strategy="iou_prior"`, `ap_method="interp"`).
+
+`preds_df` accepts a DataFrame, a CSV path, or `None`. Pass `None` together with
+`weights_path` to run the **whole pipeline from weights** — the first call
+generates predictions from the model (over `split_df["image_path"]`), then
+evaluates:
+
+```python
+ev = Evaluation(None, "ground_truth.csv", weights_path="best.pt")
+ev(split="val")   # predicts from best.pt, then evaluates
+```
+
+If `preds_df` is `None` and no `weights_path` is given, calling the evaluation
+raises `ValueError`. You can still predict manually first via
+[`predict_to_dataframe`](#from-yolo-weights-to-predictions).
 
 The image scope for each split is derived automatically from the `split`
 column in `split_df` — no extra list needs to be passed.
