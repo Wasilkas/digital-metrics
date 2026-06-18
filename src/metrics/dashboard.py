@@ -24,6 +24,7 @@ def get_dashboards(
     cm: npt.NDArray[np.int64],
     class_labels: list[str],
     suffix: str = "default",
+    *,
     save_to_excel: bool = True,
     path: str = "metrics/",
     save_confusion_matrix: bool = True,

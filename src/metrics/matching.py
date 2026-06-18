@@ -135,6 +135,7 @@ def _build_matches(
     iou_matrix: npt.NDArray[np.float64],
     pairs: MatchedPairs,
     iou_threshold: float,
+    *,
     cross_class_fp: bool,
 ) -> None:
     """Turn positional (pred, gt) pairs into PredictMatch records in place.
@@ -160,11 +161,13 @@ def _build_matches(
 
     for pred_pos in range(n_preds):
         pred_label = str(pred_labels[pred_pos])
+        match_iou: float | None = None
 
         if pred_pos in pred_to_gt:
             gt_pos = pred_to_gt[pred_pos]
             gt_label = str(gt_labels[gt_pos])
             gt_index = int(gt_indices[gt_pos])
+            match_iou = float(iou_matrix[pred_pos, gt_pos])
         else:
             gt_label = "background"
             gt_index = -1
@@ -175,6 +178,7 @@ def _build_matches(
                 if best_iou >= iou_threshold and closest_label != pred_label:
                     gt_label = closest_label
                     gt_index = int(gt_indices[best_gt_j])
+                    match_iou = best_iou
 
         matches.setdefault(pred_label, []).append(
             PredictMatch(
@@ -183,6 +187,7 @@ def _build_matches(
                 pred_index=int(pred_indices[pred_pos]),
                 gt_index=gt_index,
                 confidence=float(pred_confs[pred_pos]),
+                iou=match_iou,
             )
         )
 

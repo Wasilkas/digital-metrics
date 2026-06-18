@@ -18,7 +18,9 @@ uv pip install git+https://github.com/Wasilkas/digital-metrics
 pip install git+https://github.com/Wasilkas/digital-metrics
 ```
 
-Требуется Python 3.11+.
+Требуется Python 3.11+. Базовая установка не тянет `torch`; опциональные
+бэкенды `ultralytics` / `torchmetrics` подключаются как extras — см.
+[Внешние бэкенды метрик](#внешние-бэкенды-метрик-единая-точка-входа).
 
 ---
 
@@ -36,6 +38,7 @@ pip install git+https://github.com/Wasilkas/digital-metrics
 | `bbox_y_br` | `float` | ✓ | ✓ | Координата y нижнего-правого угла рамки |
 | `split` | `str` | ✓ | — | `"train"` / `"val"` / `"test"` |
 | `confidence` | `float` | — | ✓ | Уверенность детекции в диапазоне `[0, 1]` |
+| `image_path` | `str` | опц. | — | Полный путь к файлу изображения; нужен **только** для `Evaluation.predict_to_dataframe` (инференс YOLO) |
 
 Где `GT` — таблица эталонной разметки, `Preds` — таблица предсказаний модели.
 
@@ -123,6 +126,11 @@ ev(split="test", calibration_split="val")
 
 Оба режима работают и в схеме калибровки по валидации: пороги находятся на
 калибровочном сплите и применяются к оцениваемому.
+
+> Если выбранный порог равен **минимальной** уверенности предсказаний, отсечение
+> сохраняет все детекции — оптимизация ничего не дала (например, предсказания
+> настолько совпадают с эталоном, что оптимальный по F1 порог — это «пол»). В этом
+> случае пишется `WARNING` (по каждому классу, либо один раз для `"global"`).
 
 ---
 
@@ -293,6 +301,104 @@ Ultralytics; в остальных случаях значения по умол
 
 ---
 
+## Внешние бэкенды метрик (единая точка входа)
+
+Чтобы получить значения из устоявшейся библиотеки метрик — вместо собственного
+пути `Evaluation` — используйте единую точку входа `compute_detection_metrics`.
+Она считает метрики по тем же таблицам GT/предсказаний через один из двух
+опциональных бэкендов и возвращает `dict[str, DetectionMetrics]` (по классам:
+`precision / recall / f1 / ap50 / ap75 / ap50_95`):
+
+```python
+from metrics import compute_detection_metrics
+
+gt_df = split_df[split_df["split"] == "test"]
+
+# Сравнимо с YOLO (собственный ap_per_class из Ultralytics)
+yolo = compute_detection_metrics(gt_df, preds_df, backend="ultralytics")
+
+# Общий COCO mAP (MeanAveragePrecision из torchmetrics)
+coco = compute_detection_metrics(gt_df, preds_df, backend="torchmetrics")
+
+for cls, m in yolo.items():
+    print(f"{cls}: P={m.precision:.3f} R={m.recall:.3f} F1={m.f1:.3f} "
+          f"mAP50={m.ap50:.3f} mAP50-95={m.ap50_95:.3f}")
+```
+
+- **`backend="ultralytics"`** (по умолчанию) — сравнимо с YOLO. Рамки
+  сопоставляются и оцениваются собственным `ap_per_class` из Ultralytics, поэтому
+  AP совпадает с `model.val()`. P/R/F1 считываются при IoU 0.50 в единой
+  глобальной рабочей точке максимума среднего F1.
+- **`backend="torchmetrics"`** — общий COCO mAP через `MeanAveragePrecision`
+  из torchmetrics (pycocotools). AP — это собственные `map_50 / map_75 / map`
+  torchmetrics по классам; P/R/F1 выводятся по его P-R кривой при IoU 0.50 в
+  точке максимума F1 для каждого класса (своих готовых P/R/F1 у torchmetrics нет).
+
+Оба бэкенда оценивают только классы, у которых есть хотя бы одна эталонная рамка
+в сплите. Каждый — тяжёлый **опциональный extra** (оба тянут `torch`) с ленивым
+импортом, поэтому базовая установка остаётся без `torch`. Установите нужный:
+
+```bash
+# из клонированного репозитория
+uv sync --extra ultralytics
+uv sync --extra torchmetrics
+
+# или напрямую
+uv pip install "digital-metrics[ultralytics] @ git+https://github.com/Wasilkas/digital-metrics"
+uv pip install "digital-metrics[torchmetrics] @ git+https://github.com/Wasilkas/digital-metrics"
+```
+
+Вызов бэкенда без установленного extra поднимает `ImportError` с подсказкой по
+установке; неизвестный `backend` — `ValueError`. Базовые функции
+(`compute_ultralytics_metrics`, `compute_torchmetrics_metrics`) тоже публичны и
+вызываются напрямую. `YoloMetrics` сохранён как обратносовместимый алиас
+`DetectionMetrics`.
+
+> Эти бэкенды — путь для прямого сравнения «один в один». Собственные P/R/F1 из
+> `Evaluation` намеренно кастомные и **не** предназначены для численного
+> совпадения с выводом YOLO (см. примечание выше).
+
+На фикстуре все три способа сходятся по mAP до ~0.002–0.006, но расходятся по
+P/R/F1 до ~0.05 — это структурное следствие того, как с одной и той же кривой
+выбирается и считывается одна рабочая точка (порог на класс против единого
+глобального; «сырая» precision против огибающей COCO). Объяснение с графиками —
+в [docs/why_prf1_differs.md](docs/why_prf1_differs.md) (на английском).
+
+---
+
+## От весов YOLO к предсказаниям
+
+Если у вас есть модель Ultralytics, а не готовая таблица предсказаний, запустите
+инференс прямо из таблицы эталона — `Evaluation.predict_to_dataframe` замыкает
+конвейер оценки с начала, без `data.yaml`:
+
+```python
+from metrics import Evaluation
+
+# В эталоне должен быть столбец `image_path` (полный путь к каждому изображению).
+# Создайте объект с preds_df=None, затем сгенерируйте предсказания моделью:
+ev = Evaluation(None, "ground_truth.csv", iou_threshold=0.5)
+ev.predict_to_dataframe("best.pt", split="val")   # заполняет ev.preds_df
+ev(split="val")                                    # обычная оценка
+```
+
+- Источник изображений — `split_df["image_path"]`; `image_name` — это последняя
+  часть пути (`Path(image_path).name`), поэтому предсказания автоматически
+  стыкуются с эталоном. `instance_label` берётся из имён классов модели; рамки —
+  в пикселях `xyxy`.
+- Модель запускается с `conf=0.001`, `iou=0.7` по умолчанию (как в YOLO val), чтобы
+  ниже по конвейеру была доступна вся кривая precision-recall; поднимите `conf=`
+  для предварительной фильтрации.
+- `predict_to_dataframe` также **возвращает** DataFrame с предсказаниями — его можно
+  сохранить (`df.to_csv(...)`) или передать в `compute_detection_metrics`.
+- `image_name=` задаёт формат `image_name` (`"name"` — имя файла с расширением, по
+  умолчанию; `"stem"`; либо полный `"path"`) — согласуйте с `image_name` эталона.
+
+Требуется extra `ultralytics` (ленивый импорт; базовая установка остаётся без
+`torch`).
+
+---
+
 ## Результаты
 
 ### `ev.metrics` — `dict[str, Metrics]`
@@ -354,7 +460,7 @@ gt_vis, pred_vis = ev.get_dfs_visualization()
 
 ```python
 Evaluation(
-    preds_df: pd.DataFrame | str,
+    preds_df: pd.DataFrame | str | None,   # DataFrame, путь к CSV или None — чтобы сначала предсказать
     split_df: pd.DataFrame | str,
     iou_threshold: float = 0.5,
     preprocess: bool = False,        # удалять почти идентичные дубликаты эталонных рамок
@@ -365,13 +471,26 @@ Evaluation(
     preprocess_preds_nms_iou_threshold: float | None = None,
     ap_method: APMethod = "interp",                              # "interp" | "continuous"
     confidence_optimization: ConfidenceOptimization = "per_class",  # "per_class" | "global"
+    weights_path: str | None = None,   # веса YOLO для авто-предсказания, когда preds_df=None
 )
 ```
 
 Значения по умолчанию выбраны в стиле YOLO (`matching_strategy="iou_prior"`,
 `ap_method="interp"`).
 
-`preds_df` / `split_df` принимают как DataFrame, так и путь к CSV-файлу.
+`preds_df` / `split_df` принимают как DataFrame, так и путь к CSV-файлу. Передайте
+`preds_df=None` вместе с `weights_path`, чтобы прогнать **весь конвейер от весов**:
+первый вызов сгенерирует предсказания моделью (по `split_df["image_path"]`) и
+затем выполнит оценку:
+
+```python
+ev = Evaluation(None, "ground_truth.csv", weights_path="best.pt")
+ev(split="val")   # предсказывает из best.pt, затем оценивает
+```
+
+Если `preds_df=None`, а `weights_path` не задан, вызов оценки поднимает
+`ValueError`. Можно также сначала предсказать вручную через
+[`predict_to_dataframe`](#от-весов-yolo-к-предсказаниям).
 
 Набор изображений для каждого сплита определяется автоматически по столбцу
 `split` в `split_df` — отдельный список передавать не нужно.

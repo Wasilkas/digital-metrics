@@ -15,6 +15,26 @@ def test_greedy_returns_all_classes(tiny_dataset: tuple[pd.DataFrame, pd.DataFra
     assert set(matches.keys()) >= {"class_a", "class_b", "class_c"}
 
 
+def test_match_records_iou_for_tp(tiny_dataset: tuple[pd.DataFrame, pd.DataFrame]) -> None:
+    gt_df, preds_df = tiny_dataset
+    matches = match_boxes(gt_df, preds_df, iou_threshold=0.5, strategy="greedy")
+    tps = [m for m in matches["class_a"] if m.type == "TP"]
+    # tiny_dataset's class_a TPs are all perfect-overlap boxes → IoU == 1.0.
+    assert tps and all(m.iou == pytest.approx(1.0) for m in tps)
+
+
+def test_match_iou_none_for_fn_and_background(
+    tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    gt_df, preds_df = tiny_dataset
+    matches = match_boxes(gt_df, preds_df, iou_threshold=0.5, strategy="greedy")
+    # FNs have no prediction box; background FPs have no associated GT → iou is None.
+    fns = [m for m in matches["class_c"] if m.type == "FN"]
+    bg_fps = [m for m in matches["class_a"] if m.type == "FP" and m.gt_label == "background"]
+    assert fns and all(m.iou is None for m in fns)
+    assert bg_fps and all(m.iou is None for m in bg_fps)
+
+
 def test_greedy_tp_fp_fn_class_a(tiny_dataset: tuple[pd.DataFrame, pd.DataFrame]) -> None:
     gt_df, preds_df = tiny_dataset
     matches = match_boxes(gt_df, preds_df, iou_threshold=0.5, strategy="greedy")
