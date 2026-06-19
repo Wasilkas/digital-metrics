@@ -1,0 +1,190 @@
+"""Tests for backend selection on Evaluation (ultralytics / torchmetrics).
+
+The adapter that maps external ``DetectionMetrics`` onto native ``Metrics`` (so the
+dashboards keep working) is torch-free and always runs. The actual backend
+round-trips need the optional extras, so those are skipped unless installed.
+"""
+
+import importlib.util
+import math
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from metrics import DetectionMetrics, Evaluation
+from metrics.backends.ultralytics_metrics import (
+    _confusion_process_batch,
+    compute_ultralytics_confusion_matrix,
+)
+
+
+def _f1(p: float, r: float) -> float:
+    return 2.0 * p * r / (p + r)
+
+
+def test_confusion_process_batch_counts_tp_fp_fn() -> None:
+    # 2 classes (a=0, b=1); matrix is (3, 3) with background at index 2.
+    # GT: [a, b]; Det: [a, b]. Det 'a' matches GT 'a' (IoU 0.9); GT 'b' is missed
+    # (FN); Det 'b' matches nothing (FP). Matrix is Ultralytics-oriented [pred, gt].
+    matrix = np.zeros((3, 3), dtype=np.int64)
+    det_classes = np.array([0, 1])
+    gt_classes = np.array([0, 1])
+    iou = np.array([[0.9, 0.0], [0.0, 0.0]])  # (n_gt, n_det)
+
+    _confusion_process_batch(matrix, det_classes, gt_classes, iou, iou_thres=0.45, nc=2)
+
+    assert matrix[0, 0] == 1  # correct: pred a, gt a
+    assert matrix[2, 1] == 1  # gt b missed → background row (FN)
+    assert matrix[1, 2] == 1  # pred b spurious → background col (FP)
+    assert matrix.sum() == 3
+
+
+def test_confusion_process_batch_empty_branches() -> None:
+    # No GT → all detections are FP in the background column.
+    fp_only = np.zeros((2, 2), dtype=np.int64)
+    _confusion_process_batch(
+        fp_only, np.array([0]), np.array([], dtype=int), np.zeros((0, 1)), 0.45, 1
+    )
+    assert fp_only[0, 1] == 1 and fp_only.sum() == 1
+
+    # No detections → every GT is a FN in the background row.
+    fn_only = np.zeros((2, 2), dtype=np.int64)
+    _confusion_process_batch(
+        fn_only, np.array([], dtype=int), np.array([0]), np.zeros((1, 0)), 0.45, 1
+    )
+    assert fn_only[1, 0] == 1 and fn_only.sum() == 1
+
+
+def test_adapt_detection_metrics_reproduces_backend_numbers(
+    tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    gt_df, preds_df = tiny_dataset  # class_a x3, class_b x2, class_c x2 (all 'test')
+    ev = Evaluation(preds_df, gt_df)
+    ev._define_gt("all")
+
+    det = {
+        "class_a": DetectionMetrics(
+            precision=0.8, recall=0.6, f1=_f1(0.8, 0.6), ap50=0.7, ap75=0.5, ap50_95=0.55
+        ),
+        "class_b": DetectionMetrics(
+            precision=1.0, recall=0.5, f1=_f1(1.0, 0.5), ap50=0.9, ap75=0.8, ap50_95=0.6
+        ),
+        # class_c deliberately omitted → exercises the "missing/absent" branch.
+    }
+
+    adapted = ev._adapt_detection_metrics(det)
+
+    # precision/recall/f1/AP reproduce the backend exactly.
+    a = adapted["class_a"]
+    assert a.precision == pytest.approx(0.8)
+    assert a.recall == pytest.approx(0.6)
+    assert a.f1_score == pytest.approx(_f1(0.8, 0.6))
+    assert (a.ap50, a.ap75, a.ap50_95) == pytest.approx((0.7, 0.5, 0.55))
+    # Reconstructed float counts: TP=r*N, FN=N-TP, FP=TP*(1-p)/p (N=3 for class_a).
+    assert a.tp == pytest.approx(1.8)
+    assert a.fn == pytest.approx(1.2)
+    assert a.fp == pytest.approx(0.45)
+    assert a.cohen_kappa == -1
+    # CIs are real proportions in [0, 1].
+    assert 0.0 <= a.recall_ci_lower <= a.recall <= a.recall_ci_upper <= 1.0
+    assert 0.0 <= a.precision_ci_lower <= a.precision <= a.precision_ci_upper <= 1.0
+
+    # Class present in GT but absent from the backend output → NaN AP, zero counts.
+    c = adapted["class_c"]
+    assert math.isnan(c.ap50) and math.isnan(c.ap75) and math.isnan(c.ap50_95)
+    assert c.tp == 0 and c.fp == 0 and c.fn == 0
+
+
+def test_backend_metrics_drive_dashboards_without_cm(
+    tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
+    tmp_path: object,
+) -> None:
+    # Backend mode has no confusion matrix; the dashboards must still build.
+    gt_df, preds_df = tiny_dataset
+    ev = Evaluation(preds_df, gt_df)
+    ev._define_gt("all")
+    ev.metrics = ev._adapt_detection_metrics(
+        {
+            c: DetectionMetrics(
+                precision=0.8, recall=0.6, f1=_f1(0.8, 0.6), ap50=0.7, ap75=0.5, ap50_95=0.55
+            )
+            for c in ev.classes
+        }
+    )
+    ev.cm = None  # native-only; cleared in backend mode
+
+    devs, dtrk = ev.get_dashboards(
+        save_to_excel=False, save_confusion_matrix=False, path=str(tmp_path)
+    )
+    assert not devs.empty
+    assert "Недобраковка" in dtrk.columns
+    assert set(devs.index) == set(ev.classes)
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("ultralytics") is not None,
+    reason="ultralytics installed — backend path would run instead",
+)
+def test_backend_selection_reaches_external_path(
+    tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    # backend=... → calling the evaluation dispatches to the external backend,
+    # which here fails on the missing extra (proving the path is reached).
+    gt_df, preds_df = tiny_dataset
+    ev = Evaluation(preds_df, gt_df, backend="ultralytics")
+    with pytest.raises(ImportError, match="ultralytics"):
+        ev(split="test")
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("torchmetrics") is not None,
+    reason="torchmetrics installed — backend path would run instead",
+)
+def test_compute_metrics_torchmetrics_importerror(
+    tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    gt_df, preds_df = tiny_dataset
+    ev = Evaluation(preds_df, gt_df)
+    with pytest.raises(ImportError, match="torchmetrics"):
+        ev.compute_metrics_torchmetrics(split="test")
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("ultralytics") is not None,
+    reason="ultralytics installed — box_iou would run instead",
+)
+def test_confusion_matrix_requires_ultralytics(
+    tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    gt_df, preds_df = tiny_dataset
+    with pytest.raises(ImportError, match="ultralytics"):
+        compute_ultralytics_confusion_matrix(gt_df, preds_df)
+
+
+@pytest.mark.parametrize("backend", ["ultralytics", "torchmetrics"])
+def test_backend_mode_populates_metrics_when_installed(
+    backend: str,
+    tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    if importlib.util.find_spec(backend) is None:
+        pytest.skip(f"optional backend {backend!r} not installed")
+
+    gt_df, preds_df = tiny_dataset
+    ev = Evaluation(preds_df, gt_df, backend=backend)  # type: ignore[arg-type]
+    ev(split="test")
+
+    assert set(ev.detection_metrics) <= {"class_a", "class_b", "class_c"}
+    # Adapted native metrics reproduce the backend's precision/recall per class.
+    for cls, dm in ev.detection_metrics.items():
+        assert ev.metrics[cls].precision == pytest.approx(dm.precision, abs=1e-6)
+        assert ev.metrics[cls].recall == pytest.approx(dm.recall, abs=1e-6)
+
+    if backend == "ultralytics":
+        # ultralytics backend fills the confusion matrix (classes + background).
+        assert ev.cm is not None
+        n = len(ev.classes)
+        assert ev.cm.shape == (n + 1, n + 1)
+        assert ev.class_labels == [*ev.classes, "background"]
+    else:
+        assert ev.cm is None  # torchmetrics has no confusion matrix

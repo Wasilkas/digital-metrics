@@ -37,7 +37,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from .types import DetectionMetrics
+from ..types import DetectionMetrics
 
 # Backward-compatible alias: the YOLO-exact path historically returned its own
 # ``YoloMetrics`` model. It now shares the common :class:`DetectionMetrics`
@@ -196,3 +196,149 @@ def compute_ultralytics_metrics(
         )
         for i, c in enumerate(unique_classes)
     }
+
+
+# Ultralytics' plotted confusion matrix is built at these fixed operating points,
+# independent of the val IoU sweep (ConfusionMatrix.__init__ defaults).
+_CM_CONF = 0.25
+_CM_IOU = 0.45
+
+
+def _confusion_process_batch(
+    matrix: npt.NDArray[np.int64],
+    det_classes: npt.NDArray[np.integer[Any]],
+    gt_classes: npt.NDArray[np.integer[Any]],
+    iou: npt.NDArray[np.float64],
+    iou_thres: float,
+    nc: int,
+) -> None:
+    """Numpy port of ``ConfusionMatrix.process_batch`` (detect task, v8.3).
+
+    Updates ``matrix`` in place in Ultralytics' own orientation
+    (``matrix[pred, gt]``; row/col ``nc`` is the background bucket). ``det_classes``
+    are already confidence-filtered; ``iou`` is the ``(n_gt, n_det)`` IoU matrix for
+    those detections. The greedy one-to-one dedup (sort by IoU, unique per det then
+    per GT) is copied verbatim from Ultralytics.
+    """
+    if gt_classes.shape[0] == 0:  # no GT on this image → every prediction is a FP
+        for dc in det_classes:
+            matrix[dc, nc] += 1
+        return
+    if det_classes.shape[0] == 0:  # GT but no predictions → every GT is a FN
+        for gc in gt_classes:
+            matrix[nc, gc] += 1
+        return
+
+    x = np.where(iou > iou_thres)
+    if x[0].shape[0]:
+        matches = np.concatenate((np.stack(x, 1), iou[x[0], x[1]][:, None]), 1)
+        if x[0].shape[0] > 1:
+            matches = matches[matches[:, 2].argsort()[::-1]]
+            matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
+            matches = matches[matches[:, 2].argsort()[::-1]]
+            matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
+    else:
+        matches = np.zeros((0, 3))
+
+    n = matches.shape[0] > 0
+    m0, m1, _ = matches.transpose().astype(int)
+    for i, gc in enumerate(gt_classes):
+        j = m0 == i
+        if n and j.sum() == 1:
+            matrix[int(det_classes[m1[j][0]]), int(gc)] += 1  # correct (pred, gt)
+        else:
+            matrix[nc, int(gc)] += 1  # missed GT → background row (FN)
+
+    if n:
+        for i, dc in enumerate(det_classes):
+            if not (m1 == i).any():
+                matrix[int(dc), nc] += 1  # spurious prediction → background col (FP)
+
+
+def compute_ultralytics_confusion_matrix(
+    gt_df: pd.DataFrame,
+    preds_df: pd.DataFrame,
+    classes: list[str] | None = None,
+    split_image_names: list[str] | None = None,
+    conf: float = _CM_CONF,
+    iou_thres: float = _CM_IOU,
+) -> tuple[npt.NDArray[np.int64], list[str]]:
+    """Confusion matrix via Ultralytics' ``ConfusionMatrix.process_batch`` logic.
+
+    Mirrors the matrix ``model.val()`` plots: detections are kept above ``conf``
+    (default 0.25) and matched to GT at IoU ``iou_thres`` (default 0.45), with
+    Ultralytics' greedy one-to-one assignment and a ``background`` bucket for
+    unmatched predictions (FP) and unmatched GT (FN).
+
+    Args:
+        gt_df: Ground-truth DataFrame (standard schema), scoped to the split.
+        preds_df: Predictions DataFrame (standard schema). Predictions on images
+            outside the split are dropped.
+        classes: Class vocabulary fixing the label→index mapping. Defaults to the
+            sorted union of GT and prediction labels.
+        split_image_names: Complete list of image names in the split, including
+            empty images (no GT). Predictions on those images become false
+            positives. Defaults to the images present in ``gt_df``.
+        conf: Confidence threshold for the matrix (Ultralytics treats the YOLO-val
+            default ``0.001`` as ``0.25``; that quirk is reproduced here).
+        iou_thres: IoU threshold for matching.
+
+    Returns:
+        ``(matrix, labels)`` where ``labels`` is ``classes + ["background"]`` and
+        ``matrix`` has shape ``(nc + 1, nc + 1)``. The matrix is transposed from
+        Ultralytics' native orientation to ``matrix[true, pred]`` so it matches
+        this library's :func:`metrics.confusion.get_confusion_matrix` (sklearn
+        convention: row = ground truth, column = prediction).
+
+    Raises:
+        ImportError: If the optional ``ultralytics`` dependency is not installed.
+    """
+    try:
+        import torch
+        from ultralytics.utils.metrics import box_iou
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise ImportError(_INSTALL_HINT) from exc
+
+    if classes is None:
+        classes = sorted(set(gt_df["instance_label"]) | set(preds_df["instance_label"]))
+    class_to_idx = {c: i for i, c in enumerate(classes)}
+    nc = len(classes)
+    # Ultralytics bumps the YOLO-val sentinel 0.001 up to 0.25 for the matrix.
+    conf = _CM_CONF if conf in (None, 0.001) else conf
+
+    images: set[str] = set(gt_df["image_name"].unique())
+    if split_image_names is not None:
+        images |= set(split_image_names)
+    scoped_preds = preds_df[preds_df["image_name"].isin(images)]
+
+    gt_groups = dict(tuple(gt_df.groupby("image_name", sort=False)))
+    pred_groups = dict(tuple(scoped_preds.groupby("image_name", sort=False)))
+
+    matrix = np.zeros((nc + 1, nc + 1), dtype=np.int64)
+    for image_name in images:
+        g = gt_groups.get(image_name)
+        gt_cls = (
+            g["instance_label"].map(class_to_idx).to_numpy(np.int64)
+            if g is not None
+            else np.empty(0, np.int64)
+        )
+
+        p = pred_groups.get(image_name)
+        if p is not None and len(p):
+            p = p[p["confidence"] > conf]
+        if p is not None and len(p):
+            det_cls = p["instance_label"].map(class_to_idx).to_numpy(np.int64)
+            if g is not None and gt_cls.shape[0]:
+                gt_boxes = torch.tensor(g[_BBOX_COLS].to_numpy(np.float32))
+                det_boxes = torch.tensor(p[_BBOX_COLS].to_numpy(np.float32))
+                iou = box_iou(gt_boxes, det_boxes).cpu().numpy()
+            else:
+                iou = np.zeros((0, det_cls.shape[0]))
+        else:
+            det_cls = np.empty(0, np.int64)
+            iou = np.zeros((gt_cls.shape[0], 0))
+
+        _confusion_process_batch(matrix, det_cls, gt_cls, iou, iou_thres, nc)
+
+    labels = list(classes) + ["background"]
+    return matrix.T.copy(), labels  # transpose to [true, pred] (library convention)

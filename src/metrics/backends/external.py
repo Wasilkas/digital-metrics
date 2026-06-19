@@ -20,8 +20,8 @@ from typing import Literal, get_args
 
 import pandas as pd
 
+from ..types import DetectionMetrics
 from .torchmetrics_metrics import compute_torchmetrics_metrics
-from .types import DetectionMetrics
 from .ultralytics_metrics import compute_ultralytics_metrics
 
 Backend = Literal["ultralytics", "torchmetrics"]

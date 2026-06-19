@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -10,21 +11,32 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from tqdm import tqdm
 
-from .ap import APMethod, compute_map
-from .confidence import (
+from .backends import (
+    Backend,
+    compute_detection_metrics,
+    compute_ultralytics_confusion_matrix,
+)
+from .inference import ImageNameMode, predict_on_images
+from .matching import (
+    MatchingStrategy,
+    compute_iou_matrix,
+    find_duplicates_bboxes,
+    match_boxes,
+)
+from .preprocess import apply_nms, filter_by_confidence
+from .reporting import get_dashboards, plot_confidence_intervals
+from .scoring import (
+    APMethod,
     ConfidenceOptimization,
+    compute_kappa,
+    compute_map,
     find_best_confidences,
     find_best_global_confidence,
+    get_confusion_matrix,
+    get_confusions,
     slice_by_conf,
 )
-from .confusion import get_confusion_matrix, get_confusions
-from .dashboard import get_dashboards, plot_confidence_intervals
-from .iou import compute_iou_matrix, find_duplicates_bboxes
-from .kappa import compute_kappa
-from .matching import MatchingStrategy, match_boxes
-from .nms import apply_nms, filter_by_confidence
-from .types import Metrics, PredictMatch
-from .yolo_predict import ImageNameMode, predict_on_images
+from .types import DetectionMetrics, Metrics, PredictMatch
 
 _REQUIRED_COLS_GT = {
     "image_name",
@@ -79,6 +91,8 @@ class Evaluation:
         ap_method: APMethod = "interp",
         confidence_optimization: ConfidenceOptimization = "per_class",
         weights_path: str | None = None,
+        backend: Backend | None = None,
+        predict_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Initialise the Evaluation object.
 
@@ -120,6 +134,22 @@ class Evaluation:
                 time the evaluation runs (over ``split_df['image_path']``). If
                 ``preds_df`` is ``None`` and no weights are given, calling the
                 evaluation raises ``ValueError``.
+            backend: Which metrics engine to use. ``None`` (default) runs the
+                native pipeline (custom matching, confusion matrix, Cohen's kappa,
+                confidence calibration). ``"ultralytics"`` or ``"torchmetrics"``
+                instead score the split with that external library (over the raw,
+                unpreprocessed predictions, the way YOLO val does) and expose the
+                results both as ``detection_metrics`` (per-class
+                :class:`DetectionMetrics`) and as native ``metrics`` adapted so the
+                dashboards keep working. The external backends pick their own
+                operating point, so ``calibration_split`` / ``find_best_confs`` and
+                the confusion matrix do not apply in backend mode.
+            predict_kwargs: Extra keyword arguments forwarded to Ultralytics'
+                ``model.predict`` when predictions are auto-generated from
+                ``weights_path`` (e.g. ``{"conf": 0.25, "imgsz": 1280, "half":
+                True, "augment": True}``). Ignored when ``preds_df`` is provided.
+                For one-off control you can instead call
+                :meth:`predict_to_dataframe` with the same keyword arguments.
         """
         self.suffix = "default"
 
@@ -166,8 +196,11 @@ class Evaluation:
         self._preds_nms_iou_threshold: float | None = preprocess_preds_nms_iou_threshold
         self._ap_method: APMethod = ap_method
         self._confidence_optimization: ConfidenceOptimization = confidence_optimization
+        self._backend: Backend | None = backend
+        self._predict_kwargs: dict[str, Any] = predict_kwargs or {}
 
         self.metrics: dict[str, Metrics] = {}
+        self.detection_metrics: dict[str, DetectionMetrics] = {}
         self.cm: npt.NDArray[np.int64] | None = None
         self.class_labels: list[str] = []
         self._matches: dict[str, list[PredictMatch]] = {}
@@ -255,12 +288,13 @@ class Evaluation:
         self,
         weights: str,
         *,
-        split: str | None = None,
+        split: str | list[str] | None = None,
         conf: float = 0.001,
         iou: float = 0.7,
         imgsz: int = 640,
         device: str | None = None,
         image_name: ImageNameMode = "name",
+        **model_kwargs: Any,
     ) -> pd.DataFrame:
         """Generate predictions from a YOLO model over the ground-truth images.
 
@@ -273,8 +307,9 @@ class Evaluation:
 
         Args:
             weights: Path to Ultralytics model weights (``.pt``).
-            split: Restrict inference to this split's images (``"val"`` / ``"test"``);
-                ``None`` runs over every image in ``split_df``.
+            split: Restrict inference to one split's images (``"test"``) or several
+                (``["test", "val"]``); ``None`` runs over every image in
+                ``split_df``. Selecting splits requires a ``"split"`` column.
             conf: Inference confidence threshold (default ``0.001`` keeps the full
                 P-R curve available downstream).
             iou: Inference NMS IoU threshold.
@@ -282,16 +317,29 @@ class Evaluation:
             device: Torch device (e.g. ``"0"``, ``"cpu"``); ``None`` auto-selects.
             image_name: ``image_name`` format — ``"name"`` (filename with
                 extension, default), ``"stem"`` or ``"path"``.
+            **model_kwargs: Extra keyword arguments forwarded verbatim to
+                Ultralytics' ``model.predict`` (e.g. ``half``, ``augment``,
+                ``agnostic_nms``, ``max_det``, ``classes``, ``retina_masks``).
 
         Returns:
             The generated predictions DataFrame (also available as ``self.preds_df``).
 
         Raises:
-            ValueError: If ``split_df`` lacks an ``image_path`` column or has no
-                image paths for the requested split.
+            ValueError: If ``split_df`` lacks an ``image_path`` column, lacks a
+                ``"split"`` column when ``split`` is given, or has no image paths
+                for the requested split(s).
             ImportError: If the optional ``ultralytics`` dependency is missing.
         """
-        gt = self.split_df if split is None else self.split_df.query("split == @split")
+        if split is None:
+            gt = self.split_df
+        else:
+            if "split" not in self.split_df.columns:
+                raise ValueError(
+                    f"predict_to_dataframe(split={split!r}) requires a 'split' column "
+                    "in split_df, but none was found."
+                )
+            splits = [split] if isinstance(split, str) else list(split)
+            gt = self.split_df[self.split_df["split"].isin(splits)]
         if "image_path" not in gt.columns:
             raise ValueError(
                 "predict_to_dataframe requires an 'image_path' column in split_df "
@@ -309,6 +357,7 @@ class Evaluation:
             imgsz=imgsz,
             device=device,
             image_name=image_name,
+            **model_kwargs,
         )
         self.preds_df = preds.reset_index(drop=True)
         self._raw_preds_df = self.preds_df.copy()
@@ -352,8 +401,27 @@ class Evaluation:
             deepcopy(self.split_df) if split == "all" else self.split_df.query("split == @split")
         )
 
-    def _ensure_predictions(self) -> None:
+    def _splits_to_predict(self, split: str, calibration_split: str | None) -> list[str] | None:
+        """Splits whose images must be predicted before the evaluation runs.
+
+        Returns the evaluation split plus the calibration split (when one is
+        given), so the auto-predict path covers exactly the splits that will be
+        used downstream. Returns ``None`` (every image) when evaluating ``"all"``,
+        since that already spans every split.
+        """
+        if split == "all":
+            return None
+        splits = [split]
+        if calibration_split is not None and calibration_split not in splits:
+            splits.append(calibration_split)
+        return splits
+
+    def _ensure_predictions(self, splits: list[str] | None = None) -> None:
         """Generate predictions from ``weights_path`` when none were provided.
+
+        Args:
+            splits: Restrict auto-prediction to these splits (the evaluation split
+                plus any calibration split). ``None`` predicts over every image.
 
         Raises:
             ValueError: If no predictions exist and no ``weights_path`` was given.
@@ -367,8 +435,8 @@ class Evaluation:
                 "call predict_to_dataframe() before running the evaluation."
             )
         logger.info(f"Generating predictions from weights '{self._weights_path}'...")
-        # Predict over every image in split_df so any eval/calibration split is covered.
-        self.predict_to_dataframe(self._weights_path)
+        # Predict only the splits that will be evaluated/calibrated on.
+        self.predict_to_dataframe(self._weights_path, split=splits, **self._predict_kwargs)
 
     def _call(
         self,
@@ -377,7 +445,17 @@ class Evaluation:
         find_best_confs: bool = True,
         calibration_split: str | None = None,
     ) -> None:
-        self._ensure_predictions()
+        if self._backend is not None:
+            if calibration_split is not None:
+                logger.warning(
+                    f"calibration_split={calibration_split!r} is ignored with "
+                    f"backend={self._backend!r}; the external backend selects its own "
+                    "operating point."
+                )
+            self._run_backend(split)
+            return
+
+        self._ensure_predictions(self._splits_to_predict(split, calibration_split))
         self._define_gt(split)
         assert self.gt_df is not None
 
@@ -422,6 +500,113 @@ class Evaluation:
         self._compute_cohen_kappa()
         self.cm, self.class_labels = get_confusion_matrix(self._matches, self.classes)
         logger.info("Metrics and confusion matrix computed.")
+
+    def compute_metrics_ultralytics(self, split: str = "all") -> dict[str, DetectionMetrics]:
+        """Score ``split`` with the Ultralytics (YOLO-comparable) backend.
+
+        Generates predictions first if needed (``weights_path`` flow) and runs
+        over the raw, unpreprocessed predictions. Returns per-class
+        :class:`DetectionMetrics`; requires the ``ultralytics`` extra.
+        """
+        return self._compute_external("ultralytics", split)
+
+    def compute_metrics_torchmetrics(self, split: str = "all") -> dict[str, DetectionMetrics]:
+        """Score ``split`` with the torchmetrics (COCO mAP) backend.
+
+        Generates predictions first if needed (``weights_path`` flow) and runs
+        over the raw, unpreprocessed predictions. Returns per-class
+        :class:`DetectionMetrics`; requires the ``torchmetrics`` extra.
+        """
+        return self._compute_external("torchmetrics", split)
+
+    def _compute_external(self, backend: Backend, split: str) -> dict[str, DetectionMetrics]:
+        """Run an external backend over ``split`` and return its per-class metrics."""
+        self._ensure_predictions(self._splits_to_predict(split, None))
+        self._define_gt(split)
+        assert self.gt_df is not None
+        # Backends score the raw predictions (YOLO val style); no conf/NMS preprocessing.
+        self._validate_df(self._raw_preds_df, self.gt_df)
+        split_image_names = self.gt_df["image_name"].unique().tolist()
+        logger.info(f"Computing metrics with the '{backend}' backend on split '{split}'...")
+        return compute_detection_metrics(
+            self.gt_df,
+            self._raw_preds_df,
+            backend=backend,
+            classes=self.classes,
+            split_image_names=split_image_names,
+        )
+
+    def _run_backend(self, split: str) -> None:
+        """Populate ``detection_metrics``/``metrics`` from the selected backend.
+
+        The raw backend output is kept on ``detection_metrics``; ``metrics`` holds
+        the same numbers adapted to native :class:`Metrics` so the dashboards and
+        CI plots work unchanged. The ``"ultralytics"`` backend also fills the
+        confusion matrix (via Ultralytics' own ``ConfusionMatrix`` logic);
+        ``"torchmetrics"`` has no confusion matrix, so it is cleared.
+        """
+        assert self._backend is not None
+        self.detection_metrics = self._compute_external(self._backend, split)
+        self.metrics = self._adapt_detection_metrics(self.detection_metrics)
+        if self._backend == "ultralytics":
+            assert self.gt_df is not None
+            split_image_names = self.gt_df["image_name"].unique().tolist()
+            self.cm, self.class_labels = compute_ultralytics_confusion_matrix(
+                self.gt_df,
+                self._raw_preds_df,
+                classes=self.classes,
+                split_image_names=split_image_names,
+            )
+        else:
+            self.cm = None
+            self.class_labels = []
+
+    def _adapt_detection_metrics(
+        self, detection_metrics: dict[str, DetectionMetrics]
+    ) -> dict[str, Metrics]:
+        """Map external ``DetectionMetrics`` onto native ``Metrics`` for the dashboards.
+
+        The backends report only precision/recall/f1 and AP at a self-selected
+        operating point — no box-level TP/FP/FN. We reconstruct float counts from
+        the per-class ground-truth size ``N`` (= TP + FN, known from ``gt_df``) so
+        the reproduced precision/recall/f1 equal the backend's exactly::
+
+            TP = recall * N        FN = N - TP        FP = TP * (1 - p) / p   (p > 0)
+
+        Wilson CIs then follow from these counts — the recall CI is grounded in the
+        true ``N``; the precision CI is approximate because FP is reconstructed, not
+        counted. ``cohen_kappa`` is set to ``-1`` (not provided by external
+        backends) and the confidence threshold to ``0.0`` (the operating point is
+        internal to the backend). Classes with no GT in the split get NaN AP,
+        matching the native convention.
+        """
+        assert self.gt_df is not None
+        gt_counts = self.gt_df["instance_label"].value_counts().to_dict()
+        result: dict[str, Metrics] = {}
+        for c in self.classes:
+            n_gt = int(gt_counts.get(c, 0))
+            dm = detection_metrics.get(c)
+            if dm is None or n_gt == 0:
+                result[c] = Metrics(
+                    ap50=float("nan"),
+                    ap75=float("nan"),
+                    ap50_95=float("nan"),
+                    cohen_kappa=-1,
+                )
+                continue
+            tp = dm.recall * n_gt
+            fn = n_gt - tp
+            fp = tp * (1.0 - dm.precision) / dm.precision if dm.precision > 0 else 0.0
+            result[c] = Metrics(
+                tp=tp,
+                fp=fp,
+                fn=fn,
+                ap50=dm.ap50,
+                ap75=dm.ap75,
+                ap50_95=dm.ap50_95,
+                cohen_kappa=-1,
+            )
+        return result
 
     def _calibrate(self, calibration_split: str) -> dict[str, float]:
         """Find per-class confidence thresholds on *calibration_split*.
@@ -509,9 +694,7 @@ class Evaluation:
             return min(confs) if confs else None
 
         if self._confidence_optimization == "global":
-            all_confs = [
-                m.confidence for recs in matches.values() for m in recs if m.type != "FN"
-            ]
+            all_confs = [m.confidence for recs in matches.values() for m in recs if m.type != "FN"]
             if not all_confs:
                 return
             global_min = min(all_confs)
@@ -594,7 +777,7 @@ class Evaluation:
         Returns:
             (devs, dtrk) DataFrames.
         """
-        assert self.cm is not None, "Call evaluation() before get_dashboards()."
+        assert self.metrics, "Call evaluation() before get_dashboards()."
         return get_dashboards(
             metrics=self.metrics,
             split_df=self.split_df,

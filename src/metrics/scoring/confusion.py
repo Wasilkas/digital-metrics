@@ -5,7 +5,7 @@ import numpy.typing as npt
 import pandas as pd
 from sklearn.metrics import confusion_matrix
 
-from .types import PredictMatch
+from ..types import PredictMatch
 
 
 def get_confusion_matrix(

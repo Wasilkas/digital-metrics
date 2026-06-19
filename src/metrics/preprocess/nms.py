@@ -2,7 +2,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from .iou import compute_iou_matrix
+from ..matching import compute_iou_matrix
 
 _BBOX_COLS = ["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
 
@@ -34,7 +34,7 @@ def _compute_containment_matrix(
     inter_area = inter_w * inter_h  # (N, N)
 
     areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])  # (N,)
-    min_area = np.minimum(areas[:, np.newaxis], areas[np.newaxis, :])   # (N, N)
+    min_area = np.minimum(areas[:, np.newaxis], areas[np.newaxis, :])  # (N, N)
 
     containment = np.zeros((n, n), dtype=np.float64)
     np.divide(inter_area, min_area, out=containment, where=min_area > 0)

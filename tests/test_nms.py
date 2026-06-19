@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 
 from metrics.evaluation import Evaluation
-from metrics.nms import apply_nms, filter_by_confidence
+from metrics.preprocess import apply_nms, filter_by_confidence
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from metrics import Evaluation
-from metrics.yolo_predict import _PRED_COLUMNS, _detection_rows
+from metrics.inference.yolo_predict import _PRED_COLUMNS, _detection_rows
 
 _REQUIRED = [
     "image_name",
@@ -107,3 +107,116 @@ def test_weights_path_triggers_prediction_on_call(
     ev = Evaluation(None, gt_df, weights_path="weights.pt")
     with pytest.raises(ImportError, match="ultralytics"):
         ev(split="test")
+
+
+def test_predict_filters_to_list_of_splits(
+    split_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    # A split with no rows yields no image paths — proving the split filter ran
+    # before any model load (so it works without the ultralytics extra).
+    gt_df, preds_df = split_dataset
+    gt_df = gt_df.assign(image_path="/imgs/" + gt_df["image_name"] + ".jpg")
+    ev = Evaluation(preds_df, gt_df)
+    with pytest.raises(ValueError, match="No 'image_path' values"):
+        ev.predict_to_dataframe("weights.pt", split=["train"])
+
+
+def test_predict_split_requires_split_column(
+    split_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    gt_df, preds_df = split_dataset
+    gt_df = gt_df.drop(columns="split").assign(image_path="/imgs/" + gt_df["image_name"] + ".jpg")
+    ev = Evaluation(preds_df, gt_df)
+    with pytest.raises(ValueError, match="requires a 'split' column"):
+        ev.predict_to_dataframe("weights.pt", split="test")
+
+
+def test_splits_to_predict_unions_eval_and_calibration(
+    split_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    gt_df, preds_df = split_dataset
+    ev = Evaluation(preds_df, gt_df)
+    assert ev._splits_to_predict("test", "val") == ["test", "val"]
+    assert ev._splits_to_predict("test", None) == ["test"]
+    assert ev._splits_to_predict("test", "test") == ["test"]  # no duplicate
+    assert ev._splits_to_predict("all", "val") is None  # "all" already spans splits
+
+
+def test_auto_predict_targets_eval_and_calibration_splits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The weights flow must predict on exactly the eval + calibration splits,
+    # not the whole split_df (here: skip 'train'). Stub out the model call and
+    # capture which image paths it was handed.
+    import metrics.evaluation as evaluation_module
+
+    gt_df = pd.DataFrame(
+        [
+            ("train1", "class_a", 0, 0, 10, 10, "train"),
+            ("val1", "class_a", 0, 0, 10, 10, "val"),
+            ("test1", "class_a", 0, 0, 10, 10, "test"),
+        ],
+        columns=[
+            "image_name",
+            "instance_label",
+            "bbox_x_tl",
+            "bbox_y_tl",
+            "bbox_x_br",
+            "bbox_y_br",
+            "split",
+        ],
+    ).assign(image_path=lambda d: "/imgs/" + d["image_name"] + ".jpg")
+
+    captured: dict[str, list[str]] = {}
+
+    def fake_predict_on_images(weights: str, image_paths: list[str], **_: object) -> pd.DataFrame:
+        captured["paths"] = list(image_paths)
+        return pd.DataFrame(columns=_PRED_COLUMNS)  # no detections; pipeline still runs
+
+    monkeypatch.setattr(evaluation_module, "predict_on_images", fake_predict_on_images)
+
+    ev = Evaluation(None, gt_df, weights_path="weights.pt")
+    ev(split="test", calibration_split="val")
+
+    assert set(captured["paths"]) == {"/imgs/val1.jpg", "/imgs/test1.jpg"}
+
+
+def test_predict_kwargs_forwarded_to_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    # predict_kwargs on the constructor must reach Ultralytics' model.predict via
+    # the auto-predict (weights) flow.
+    import metrics.evaluation as evaluation_module
+
+    gt_df = pd.DataFrame(
+        [("test1", "class_a", 0, 0, 10, 10, "test")],
+        columns=[
+            "image_name",
+            "instance_label",
+            "bbox_x_tl",
+            "bbox_y_tl",
+            "bbox_x_br",
+            "bbox_y_br",
+            "split",
+        ],
+    ).assign(image_path="/imgs/test1.jpg")
+
+    captured: dict[str, object] = {}
+
+    def fake_predict_on_images(
+        weights: str, image_paths: list[str], **kwargs: object
+    ) -> pd.DataFrame:
+        captured.update(kwargs)
+        return pd.DataFrame(columns=_PRED_COLUMNS)
+
+    monkeypatch.setattr(evaluation_module, "predict_on_images", fake_predict_on_images)
+
+    ev = Evaluation(
+        None,
+        gt_df,
+        weights_path="weights.pt",
+        predict_kwargs={"imgsz": 1280, "half": True, "augment": True},
+    )
+    ev(split="test")
+
+    assert captured["imgsz"] == 1280  # named param, threaded through
+    assert captured["half"] is True  # extra model kwarg
+    assert captured["augment"] is True

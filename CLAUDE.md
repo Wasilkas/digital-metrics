@@ -55,26 +55,46 @@ Ruff config is in `pyproject.toml`. mypy runs in strict mode.
 
 ## Project Structure
 
+Modules are grouped into subpackages by role. Each subpackage's ``__init__.py``
+re-exports its public names, so internal and external code imports from the
+subpackage (e.g. ``from .scoring import compute_map``), and the top-level
+``metrics/__init__.py`` keeps the public API flat (``from metrics import ...``).
+``types.py`` and ``ci.py`` stay at the top level as the shared foundation
+(``types`` depends on ``ci``), alongside the ``evaluation`` orchestrator.
+
 ```
 src/
   metrics/
-    __init__.py
+    __init__.py       # public API (re-exports from the subpackages below)
     types.py          # Pydantic models: PredictMatch, Metrics, DetectionMetrics
-    iou.py            # IoU matrix computation
-    assignment.py     # pure box-assignment kernels (greedy/iou_prior/hungarian) on IoU matrices
-    matching.py       # box matching → PredictMatch records; wraps assignment kernels
-    ap.py             # AP / mAP computation; APMethod + MatchingStrategy options; reuses assignment kernels
-    confidence.py     # best-confidence search: per-class + global (YOLO-style) thresholds
-    kappa.py          # Cohen's kappa (pixel-mask method)
-    ci.py             # Wilson confidence interval
+    ci.py             # Wilson confidence interval (foundation; types depends on it)
     evaluation.py     # Evaluation orchestrator class
-    dashboard.py      # Excel export + CI plots
-    confusion.py      # confusion matrix helpers
-    nms.py            # predictions preprocessing: confidence filter + custom NMS
-    external.py       # single entry point: compute_detection_metrics(backend=...)
-    ultralytics_metrics.py  # optional YOLO-comparable metrics via ultralytics ap_per_class
-    torchmetrics_metrics.py # optional COCO mAP via torchmetrics MeanAveragePrecision
-    yolo_predict.py   # optional YOLO inference helper (Evaluation.predict_to_dataframe)
+    matching/         # box matching: geometry → assignment → records
+      __init__.py     # re-exports: compute_iou_matrix, match_boxes, MatchingStrategy, assign_*
+      iou.py          # IoU matrix computation
+      assignment.py   # pure box-assignment kernels (greedy/iou_prior/hungarian) on IoU matrices
+      matching.py     # box matching → PredictMatch records; wraps assignment kernels
+    scoring/          # metric computations from matches/boxes
+      __init__.py     # re-exports: compute_map/compute_ap/APMethod, compute_kappa,
+                      #   find_best_*/ConfidenceOptimization, get_confusion_matrix/get_confusions
+      ap.py           # AP / mAP computation; APMethod + MatchingStrategy options; reuses assignment kernels
+      confidence.py   # best-confidence search: per-class + global (YOLO-style) thresholds
+      kappa.py        # Cohen's kappa (pixel-mask method)
+      confusion.py    # confusion matrix helpers (native, match-record based)
+    preprocess/       # predictions preprocessing
+      __init__.py     # re-exports: filter_by_confidence, apply_nms
+      nms.py          # confidence filter + custom NMS
+    reporting/        # output artifacts
+      __init__.py     # re-exports: get_dashboards, plot_confidence_intervals
+      dashboard.py    # Excel export + CI plots
+    backends/         # optional, torch-backed metric backends (lazy torch import)
+      __init__.py     # re-exports: compute_detection_metrics/Backend, compute_ultralytics_*, compute_torchmetrics_metrics, YoloMetrics
+      external.py     # single entry point: compute_detection_metrics(backend=...)
+      ultralytics_metrics.py  # optional YOLO-comparable metrics (ap_per_class) + confusion matrix
+      torchmetrics_metrics.py # optional COCO mAP via torchmetrics MeanAveragePrecision
+    inference/        # optional YOLO inference (lazy torch import)
+      __init__.py     # re-exports: predict_on_images, ImageNameMode
+      yolo_predict.py # YOLO inference helper (Evaluation.predict_to_dataframe)
 tests/
   conftest.py
   test_iou.py
@@ -185,7 +205,7 @@ numerically match YOLO's console output.
 
 ### External metrics backends (optional, single entry point)
 
-`external.py` exposes one dispatcher for library-backed metrics:
+`backends/external.py` exposes one dispatcher for library-backed metrics:
 
 ```python
 Backend = Literal["ultralytics", "torchmetrics"]
@@ -203,7 +223,20 @@ imported lazily; the core install stays torch-free. The underlying functions
 (`compute_ultralytics_metrics`, `compute_torchmetrics_metrics`) are also public
 and callable directly.
 
-- **`"ultralytics"`** (`ultralytics_metrics.py`, `pip install
+`Evaluation` is the unified entry point over these backends: pass
+`backend="ultralytics"`/`"torchmetrics"` (or call
+`evaluation.compute_metrics_ultralytics(split)` /
+`compute_metrics_torchmetrics(split)` directly). In `backend` mode the call scores
+the split over `_raw_preds_df`, stores the raw result on `detection_metrics`, and
+adapts it onto native `Metrics` (reconstructing float TP/FP/FN from the per-class
+GT count) so `get_dashboards` / `plot_confidence_intervals` work unchanged. The
+backends choose their own operating point, so `calibration_split` /
+`find_best_confs` do not apply. The `"ultralytics"` backend also fills `cm` /
+`class_labels` via `compute_ultralytics_confusion_matrix` (Ultralytics'
+`ConfusionMatrix.process_batch`, ported; conf 0.25 / IoU 0.45, transposed to the
+sklearn row=GT/col=pred convention); `"torchmetrics"` has no CM (`cm` is `None`).
+
+- **`"ultralytics"`** (`backends/ultralytics_metrics.py`, `pip install
   digital-metrics[ultralytics]`) — YOLO-comparable. Boxes go through a faithful
   per-threshold re-match (`_match_predictions`, a numpy port of
   `BaseValidator.match_predictions`) and Ultralytics' `box_iou`, then Ultralytics'
@@ -212,7 +245,7 @@ and callable directly.
   0.50). On the fixture test split our `Evaluation` P/R/F1 (`iou_prior` + `global`
   confidence) track this to mean |ΔF1| ≈ 0.007. See
   `scripts/compare_ultralytics_prf1.py`.
-- **`"torchmetrics"`** (`torchmetrics_metrics.py`, `pip install
+- **`"torchmetrics"`** (`backends/torchmetrics_metrics.py`, `pip install
   digital-metrics[torchmetrics]`) — general COCO mAP from torchmetrics'
   `MeanAveragePrecision` (pycocotools backend). AP is torchmetrics' own
   `map_50`/`map_75`/`map` per class. torchmetrics is AP-native with no headline
@@ -237,7 +270,7 @@ skipped when their extra is absent):
 
 ## Box Matching — Three Strategies
 
-`matching.py` exposes three strategies behind a common interface:
+`matching/matching.py` exposes three strategies behind a common interface:
 
 ```python
 MatchingStrategy = Literal["greedy", "hungarian", "iou_prior"]
@@ -359,28 +392,54 @@ All of the following must exist after any refactor:
 - `Evaluation(preds_df, split_df, iou_threshold, preprocess, skip_cohen_kappa,
   matching_strategy, preprocess_preds_conf_threshold,
   preprocess_preds_nms_containment_threshold, preprocess_preds_nms_iou_threshold,
-  ap_method, confidence_optimization, weights_path)` — `preds_df` may be `None`
-  (an empty placeholder is created) to predict first; `weights_path` is an
-  optional YOLO weights path
+  ap_method, confidence_optimization, weights_path, backend, predict_kwargs)` —
+  `preds_df` may be `None` (an empty placeholder is created) to predict first;
+  `weights_path` is an optional YOLO weights path. `backend` (`None` = native;
+  `"ultralytics"` / `"torchmetrics"`) makes `Evaluation` the single entry point:
+  when set, the call scores the split with that external library over
+  `_raw_preds_df` instead of the native pipeline (see `evaluation.detection_metrics`
+  below). `predict_kwargs` (`dict | None`) is forwarded to Ultralytics'
+  `model.predict` when predictions are auto-generated from `weights_path`
+  (e.g. `{"conf": 0.25, "imgsz": 1280, "half": True}`); ignored when `preds_df` is
+  given
 - `evaluation(split, find_best_confs, calibration_split)` — main call. When
   `preds_df` was `None`, the first run generates predictions from `weights_path`
-  (over every `split_df['image_path']`); if `preds_df` is `None` and no
-  `weights_path` was given it raises `ValueError`. After confidence optimisation
-  it logs a warning for any class whose chosen threshold equals the minimum
-  prediction confidence (the cut keeps every detection, so optimisation had no
-  effect — e.g. identical pred/GT boxes)
+  over just the splits it will use — the evaluation split plus `calibration_split`
+  (or every image when `split="all"`), via `_splits_to_predict`; if `preds_df` is
+  `None` and no `weights_path` was given it raises `ValueError`. After confidence
+  optimisation it logs a warning for any class whose chosen threshold equals the
+  minimum prediction confidence (the cut keeps every detection, so optimisation
+  had no effect — e.g. identical pred/GT boxes)
 - `evaluation.predict_to_dataframe(weights, split, conf, iou, imgsz, device,
-  image_name)` — optional YOLO inference: runs Ultralytics ``weights`` over the
-  images in ``split_df['image_path']`` and stores predictions in the standard
-  schema as ``preds_df``/``_raw_preds_df`` (``image_name`` = last path part).
-  Requires the `ultralytics` extra (lazy import, `ImportError` with hint); raises
-  `ValueError` when `split_df` has no `image_path` column. Row-building helpers in
-  `yolo_predict.py` (`predict_on_images`, `_detection_rows`) are torch-free.
+  image_name, **model_kwargs)` — optional YOLO inference: runs Ultralytics
+  ``weights`` over the images in ``split_df['image_path']`` and stores predictions
+  in the standard schema as ``preds_df``/``_raw_preds_df`` (``image_name`` = last
+  path part). `split` accepts a single split, a list of splits (e.g.
+  `["test", "val"]`), or `None` (every image); selecting splits needs a `"split"`
+  column. `**model_kwargs` are forwarded verbatim to `model.predict` (e.g. `half`,
+  `augment`, `max_det`, `classes`). Requires the `ultralytics` extra (lazy import,
+  `ImportError` with hint); raises `ValueError` when `split_df` has no `image_path`
+  column (or no `"split"` column when `split` is given). Row-building helpers in
+  `inference/yolo_predict.py` (`predict_on_images`, `_detection_rows`) are
+  torch-free (`predict_on_images` also accepts `**model_kwargs`).
 - Input validation (raises `ValueError`): missing required columns, `NA` in the
   predictions `confidence` column, prediction labels absent from the GT class
   vocabulary, and val/test calibration splits that share an `image_name`
-- `evaluation.metrics` — `dict[str, Metrics]`
-- `evaluation.cm`, `evaluation.class_labels`
+- `evaluation.compute_metrics_ultralytics(split)` /
+  `evaluation.compute_metrics_torchmetrics(split)` — score `split` with that
+  external backend over `_raw_preds_df` and return `dict[str, DetectionMetrics]`
+  (auto-predicting first via `weights_path` when needed); require the matching
+  optional extra (lazy import, `ImportError` with hint)
+- `evaluation.metrics` — `dict[str, Metrics]`. In `backend` mode this holds the
+  backend's numbers adapted onto native `Metrics`: TP/FP/FN are reconstructed as
+  floats from the per-class GT count so precision/recall/f1/AP reproduce the
+  backend exactly and the dashboards/CI plots keep working (`cohen_kappa = -1`,
+  confidence `0.0`)
+- `evaluation.detection_metrics` — `dict[str, DetectionMetrics]`; the raw external
+  backend output, populated only in `backend` mode (empty otherwise)
+- `evaluation.cm`, `evaluation.class_labels` — populated natively and by the
+  `"ultralytics"` backend (Ultralytics' own confusion-matrix logic); `None` for the
+  `"torchmetrics"` backend, where `get_dashboards` then skips the CM sheet
 - `evaluation.best_confidences` — `dict[str, float]` (per-class optimal threshold)
 - `evaluation.unfiltered_matches` — matches before confidence slicing
 - `evaluation._raw_preds_df` — unpreprocessed predictions (passed to `compute_map`)
@@ -393,8 +452,8 @@ All of the following must exist after any refactor:
   — `ap50/ap75/ap50_95` are `float | nan` (NaN when class absent from split)
 - `PredictMatch` with `type` computed field and an optional `iou` field (IoU
   with the associated GT box; `None` for `background` FPs and FNs)
-- `nms.filter_by_confidence(preds_df, threshold)` → filtered DataFrame
-- `nms.apply_nms(preds_df, same_class_containment_threshold, cross_class_iou_threshold)`
+- `preprocess.filter_by_confidence(preds_df, threshold)` → filtered DataFrame
+- `preprocess.apply_nms(preds_df, same_class_containment_threshold, cross_class_iou_threshold)`
   → DataFrame with suppressed rows removed
 - `APMethod = Literal["interp", "continuous"]` exported from `metrics`
 - `MatchingStrategy = Literal["greedy", "hungarian", "iou_prior"]` exported from `metrics`
@@ -418,6 +477,12 @@ All of the following must exist after any refactor:
   exported from `metrics` — optional YOLO-comparable P/R/F1/AP via Ultralytics'
   own `ap_per_class`; requires the `ultralytics` extra (lazy import, raises
   `ImportError` with an install hint when missing)
+- `compute_ultralytics_confusion_matrix(gt_df, preds_df, classes,
+  split_image_names, conf, iou_thres)` exported from `metrics` — optional
+  confusion matrix via a numpy port of Ultralytics'
+  `ConfusionMatrix.process_batch`; returns `(matrix, labels)` with shape
+  `(nc+1, nc+1)` in sklearn row=GT/col=pred orientation; requires the
+  `ultralytics` extra (lazy import, raises `ImportError` with an install hint)
 - `compute_torchmetrics_metrics(gt_df, preds_df, classes, split_image_names)`
   exported from `metrics` — optional general COCO mAP via torchmetrics'
   `MeanAveragePrecision`; requires the `torchmetrics` extra (lazy import, raises

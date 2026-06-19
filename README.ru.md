@@ -366,6 +366,47 @@ P/R/F1 до ~0.05 — это структурное следствие того,
 
 ---
 
+## `Evaluation` с внешним бэкендом
+
+Те же два бэкенда встроены в `Evaluation`: можно выбрать движок метрик и
+сохранить остальной рабочий процесс — дашборды, графики CI, матрицу ошибок.
+Передайте `backend=` в конструктор или вызовите бэкенд напрямую:
+
+```python
+from metrics import Evaluation
+
+ev = Evaluation(preds_df, split_df, backend="ultralytics")  # или "torchmetrics"
+ev(split="test")
+
+ev.detection_metrics   # «сырой» dict[str, DetectionMetrics] от бэкенда
+ev.metrics             # те же числа, адаптированные к нативным Metrics
+ev.get_dashboards()    # работает — построено по результатам бэкенда
+
+# Либо запустить бэкенд, не переключая весь Evaluation:
+yolo = ev.compute_metrics_ultralytics(split="test")
+coco = ev.compute_metrics_torchmetrics(split="test")
+```
+
+- `backend=None` (по умолчанию) запускает нативный конвейер. `"ultralytics"` /
+  `"torchmetrics"` считают метрики сплита по **исходным** предсказаниям (как
+  `model.val()`) и сами выбирают рабочую точку, поэтому `calibration_split` /
+  `find_best_confs` и пороги предобработки в этом режиме не применяются.
+- `ev.detection_metrics` хранит нетронутый вывод бэкенда; `ev.metrics` — те же
+  precision / recall / f1 / AP, **адаптированные к нативным `Metrics`**: TP/FP/FN
+  восстанавливаются как дробные числа из количества эталонных рамок класса, чтобы
+  дашборды и графики CI продолжали работать. В этом режиме `cohen_kappa` равен
+  `-1`, а порог `confidence` по классу — `0.0` (рабочая точка задаётся внутри
+  бэкенда).
+- **Матрица ошибок** — бэкенд `"ultralytics"` заполняет `ev.cm` / `ev.class_labels`
+  собственной логикой Ultralytics (numpy-порт `ConfusionMatrix.process_batch` с
+  дефолтами conf 0.25 / IoU 0.45 — матрица, которую рисует `model.val()`),
+  транспонированной к принятой здесь ориентации строка = эталон / столбец =
+  предсказание. У `"torchmetrics"` матрицы ошибок нет, поэтому `ev.cm` равно
+  `None`, и `get_dashboards` пропускает этот лист. Отдельная функция
+  `compute_ultralytics_confusion_matrix(gt_df, preds_df)` также публична.
+
+---
+
 ## От весов YOLO к предсказаниям
 
 Если у вас есть модель Ultralytics, а не готовая таблица предсказаний, запустите
@@ -386,9 +427,19 @@ ev(split="val")                                    # обычная оценка
   часть пути (`Path(image_path).name`), поэтому предсказания автоматически
   стыкуются с эталоном. `instance_label` берётся из имён классов модели; рамки —
   в пикселях `xyxy`.
+- `split=` задаёт, по каким изображениям запускать инференс: один сплит (`"val"`),
+  список сплитов (`["test", "val"]`) или `None` — по всем изображениям в
+  `split_df`. (При авто-генерации предсказаний из `weights_path` `Evaluation`
+  делает это сам — запуская только оцениваемый сплит плюс `calibration_split`,
+  если он задан.)
 - Модель запускается с `conf=0.001`, `iou=0.7` по умолчанию (как в YOLO val), чтобы
   ниже по конвейеру была доступна вся кривая precision-recall; поднимите `conf=`
   для предварительной фильтрации.
+- Любые дополнительные аргументы `model.predict` передаются напрямую как
+  именованные аргументы —
+  `ev.predict_to_dataframe("best.pt", split="val", imgsz=1280, half=True, augment=True)`
+  — либо в режиме авто-предсказания через конструктор:
+  `predict_kwargs={"imgsz": 1280, "half": True}`.
 - `predict_to_dataframe` также **возвращает** DataFrame с предсказаниями — его можно
   сохранить (`df.to_csv(...)`) или передать в `compute_detection_metrics`.
 - `image_name=` задаёт формат `image_name` (`"name"` — имя файла с расширением, по
@@ -472,6 +523,8 @@ Evaluation(
     ap_method: APMethod = "interp",                              # "interp" | "continuous"
     confidence_optimization: ConfidenceOptimization = "per_class",  # "per_class" | "global"
     weights_path: str | None = None,   # веса YOLO для авто-предсказания, когда preds_df=None
+    backend: Backend | None = None,    # None = нативный путь; "ultralytics" | "torchmetrics"
+    predict_kwargs: dict | None = None,  # доп. аргументы model.predict(...) для прогона от весов
 )
 ```
 
@@ -480,7 +533,8 @@ Evaluation(
 
 `preds_df` / `split_df` принимают как DataFrame, так и путь к CSV-файлу. Передайте
 `preds_df=None` вместе с `weights_path`, чтобы прогнать **весь конвейер от весов**:
-первый вызов сгенерирует предсказания моделью (по `split_df["image_path"]`) и
+первый вызов сгенерирует предсказания моделью только по тем сплитам, которые
+будут использованы (оцениваемый сплит плюс `calibration_split`, если задан), и
 затем выполнит оценку:
 
 ```python
@@ -513,6 +567,15 @@ ev(split="val")   # предсказывает из best.pt, затем оцен
 - `confidence_optimization` — `"per_class"` (по умолчанию) подбирает порог для
   каждого класса; `"global"` выбирает единый порог в стиле YOLO, общий для всех
   классов (см. раздел [Оптимизация порога уверенности](#оптимизация-порога-уверенности)).
+- `backend` — `None` (по умолчанию) запускает нативный конвейер; `"ultralytics"` /
+  `"torchmetrics"` заставляют `Evaluation` считать метрики сплита через
+  соответствующую внешнюю библиотеку (см. раздел
+  [`Evaluation` с внешним бэкендом](#evaluation-с-внешним-бэкендом)).
+- `predict_kwargs` — дополнительные аргументы, передаваемые в `model.predict`
+  Ultralytics при авто-генерации предсказаний из `weights_path` (например,
+  `{"conf": 0.25, "imgsz": 1280, "half": True, "augment": True}`). Игнорируется,
+  если задан `preds_df`. Для разового запуска те же аргументы можно передать прямо
+  в [`predict_to_dataframe`](#от-весов-yolo-к-предсказаниям).
 
 ### Вызов `evaluation(...)`
 
@@ -527,7 +590,10 @@ ev(
 ### Доступные атрибуты после вызова
 
 - `ev.metrics` — `dict[str, Metrics]`
-- `ev.cm`, `ev.class_labels` — матрица ошибок и подписи классов
+- `ev.cm`, `ev.class_labels` — матрица ошибок и подписи классов (`ev.cm` равно
+  `None` в режиме бэкенда `"torchmetrics"`)
+- `ev.detection_metrics` — `dict[str, DetectionMetrics]`, «сырой» результат
+  внешнего бэкенда; заполняется только в режиме `backend` (иначе пустой)
 - `ev.best_confidences` — `dict[str, float]`, оптимальный порог по каждому классу
 - `ev.unfiltered_matches` — сопоставления до отсечения по уверенности
 

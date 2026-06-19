@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from metrics.iou import compute_iou_matrix, find_duplicates_bboxes
+from metrics.matching import compute_iou_matrix, find_duplicates_bboxes
 
 
 def test_perfect_overlap() -> None:

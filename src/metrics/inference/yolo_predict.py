@@ -86,6 +86,7 @@ def predict_on_images(
     imgsz: int = 640,
     device: str | None = None,
     image_name: ImageNameMode = "name",
+    **model_kwargs: Any,
 ) -> pd.DataFrame:
     """Run a YOLO model over ``image_paths`` and return predictions in our schema.
 
@@ -102,6 +103,10 @@ def predict_on_images(
         image_name: How to fill ``image_name`` — ``"name"`` (filename with
             extension, the default and this project's convention), ``"stem"`` (no
             extension) or ``"path"`` (full path).
+        **model_kwargs: Extra keyword arguments forwarded verbatim to
+            ``model.predict`` (e.g. ``half``, ``augment``, ``agnostic_nms``,
+            ``max_det``, ``classes``, ``retina_masks``). ``source``, ``stream`` and
+            ``verbose`` are managed here and must not be passed.
 
     Returns:
         DataFrame with the columns in ``_PRED_COLUMNS``; empty (with columns) when
@@ -131,6 +136,7 @@ def predict_on_images(
         imgsz=imgsz,
         device=device,
         verbose=False,
+        **model_kwargs,
     )
     # Ultralytics yields results in input order but rewrites ``r.path`` to generic
     # names for a list source, so name from the original path instead (strict zip

@@ -1,11 +1,15 @@
-from .ap import APMethod
-from .confidence import ConfidenceOptimization
+from .backends import (
+    Backend,
+    YoloMetrics,
+    compute_detection_metrics,
+    compute_torchmetrics_metrics,
+    compute_ultralytics_confusion_matrix,
+    compute_ultralytics_metrics,
+)
 from .evaluation import Evaluation
-from .external import Backend, compute_detection_metrics
 from .matching import MatchingStrategy
-from .torchmetrics_metrics import compute_torchmetrics_metrics
+from .scoring import APMethod, ConfidenceOptimization
 from .types import DetectionMetrics, Metrics, PredictMatch
-from .ultralytics_metrics import YoloMetrics, compute_ultralytics_metrics
 
 __all__ = [
     "APMethod",
@@ -19,5 +23,6 @@ __all__ = [
     "YoloMetrics",
     "compute_detection_metrics",
     "compute_torchmetrics_metrics",
+    "compute_ultralytics_confusion_matrix",
     "compute_ultralytics_metrics",
 ]
