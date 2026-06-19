@@ -38,6 +38,8 @@ Both DataFrames share the same column names:
 | `split` | `str` | ✓ | — | `"train"` / `"val"` / `"test"` |
 | `confidence` | `float` | — | ✓ | Detection score in `[0, 1]` |
 | `image_path` | `str` | opt | — | Full path to the image file; required **only** by `Evaluation.predict_to_dataframe` (YOLO inference) |
+| `image_width` | `int` | opt | — | Image width in pixels; required **only** when `skip_cohen_kappa=False` (Cohen's kappa pixel masks) |
+| `image_height` | `int` | opt | — | Image height in pixels; required **only** when `skip_cohen_kappa=False` (Cohen's kappa pixel masks) |
 
 ### Input validation
 
@@ -320,13 +322,29 @@ coco = ev.compute_metrics_torchmetrics(split="test")
 
 - `backend=None` (default) runs the native pipeline. `"ultralytics"` /
   `"torchmetrics"` score the split over the **raw** predictions (the way
-  `model.val()` does) and pick their own operating point, so `calibration_split`
-  / `find_best_confs` and the preprocessing thresholds do not apply.
+  `model.val()` does); `find_best_confs` and the preprocessing thresholds do not
+  apply.
+- **Calibration** — by default a backend self-selects its operating point on the
+  eval split (in-sample). Pass `calibration_split="val"` and the `"ultralytics"`
+  backend instead reports P/R/F1 at the F1-optimal confidence found on `val`,
+  reading it off `ap_per_class`'s per-class curves; **AP stays over the full
+  curve** (still equals `model.val()`), and the chosen threshold(s) land on
+  `ev.best_confidences`. `confidence_optimization` selects `"per_class"` vs
+  `"global"` thresholds, exactly like the native path. `"torchmetrics"` ignores
+  `calibration_split` with a warning (not supported yet). The standalone helper
+  `find_ultralytics_confidence(gt_df, preds_df, mode=...)` and
+  `compute_ultralytics_metrics(..., conf_threshold=...)` expose the same mechanism.
+
+  ```python
+  ev = Evaluation(preds_df, split_df, backend="ultralytics",
+                  confidence_optimization="per_class")
+  ev(split="test", calibration_split="val")   # calibrate on val, report on test
+  ```
 - `ev.detection_metrics` holds the untouched backend output; `ev.metrics` holds
   the same precision / recall / f1 / AP **adapted onto native `Metrics`** — TP/FP/FN
   are reconstructed as floats from the per-class GT count so the dashboards and CI
-  plots keep working. In this mode `cohen_kappa` is `-1` and the per-class
-  `confidence` threshold is `0.0` (the backend's operating point is internal).
+  plots keep working. In this mode `cohen_kappa` is `-1`; the per-class
+  `confidence` threshold is `0.0` unless a `calibration_split` set it.
 - **Confusion matrix** — the `"ultralytics"` backend fills `ev.cm` /
   `ev.class_labels` using Ultralytics' own confusion-matrix logic (a numpy port of
   `ConfusionMatrix.process_batch`, at its conf 0.25 / IoU 0.45 defaults — the

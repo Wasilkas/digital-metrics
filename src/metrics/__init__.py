@@ -5,6 +5,7 @@ from .backends import (
     compute_torchmetrics_metrics,
     compute_ultralytics_confusion_matrix,
     compute_ultralytics_metrics,
+    find_ultralytics_confidence,
 )
 from .evaluation import Evaluation
 from .matching import MatchingStrategy
@@ -25,4 +26,5 @@ __all__ = [
     "compute_torchmetrics_metrics",
     "compute_ultralytics_confusion_matrix",
     "compute_ultralytics_metrics",
+    "find_ultralytics_confidence",
 ]

@@ -10,6 +10,7 @@ from .ultralytics_metrics import (
     YoloMetrics,
     compute_ultralytics_confusion_matrix,
     compute_ultralytics_metrics,
+    find_ultralytics_confidence,
 )
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "compute_torchmetrics_metrics",
     "compute_ultralytics_confusion_matrix",
     "compute_ultralytics_metrics",
+    "find_ultralytics_confidence",
 ]

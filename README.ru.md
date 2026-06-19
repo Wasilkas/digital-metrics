@@ -39,6 +39,8 @@ pip install git+https://github.com/Wasilkas/digital-metrics
 | `split` | `str` | ✓ | — | `"train"` / `"val"` / `"test"` |
 | `confidence` | `float` | — | ✓ | Уверенность детекции в диапазоне `[0, 1]` |
 | `image_path` | `str` | опц. | — | Полный путь к файлу изображения; нужен **только** для `Evaluation.predict_to_dataframe` (инференс YOLO) |
+| `image_width` | `int` | опц. | — | Ширина изображения в пикселях; нужна **только** при `skip_cohen_kappa=False` (пиксельные маски каппы Коэна) |
+| `image_height` | `int` | опц. | — | Высота изображения в пикселях; нужна **только** при `skip_cohen_kappa=False` (пиксельные маски каппы Коэна) |
 
 Где `GT` — таблица эталонной разметки, `Preds` — таблица предсказаний модели.
 
@@ -389,14 +391,30 @@ coco = ev.compute_metrics_torchmetrics(split="test")
 
 - `backend=None` (по умолчанию) запускает нативный конвейер. `"ultralytics"` /
   `"torchmetrics"` считают метрики сплита по **исходным** предсказаниям (как
-  `model.val()`) и сами выбирают рабочую точку, поэтому `calibration_split` /
-  `find_best_confs` и пороги предобработки в этом режиме не применяются.
+  `model.val()`); `find_best_confs` и пороги предобработки в этом режиме не
+  применяются.
+- **Калибровка** — по умолчанию бэкенд сам выбирает рабочую точку на оцениваемом
+  сплите (in-sample). Передайте `calibration_split="val"`, и бэкенд
+  `"ultralytics"` будет отчитывать P/R/F1 в точке F1-оптимальной уверенности,
+  найденной на `val`, считывая её по per-class кривым `ap_per_class`; **AP
+  остаётся по всей кривой** (по-прежнему совпадает с `model.val()`), а выбранные
+  пороги попадают в `ev.best_confidences`. `confidence_optimization` выбирает
+  `"per_class"` или `"global"` пороги — как и в нативном пути. `"torchmetrics"`
+  игнорирует `calibration_split` с предупреждением (пока не поддерживается).
+  Те же механизмы доступны отдельно: `find_ultralytics_confidence(gt_df, preds_df,
+  mode=...)` и `compute_ultralytics_metrics(..., conf_threshold=...)`.
+
+  ```python
+  ev = Evaluation(preds_df, split_df, backend="ultralytics",
+                  confidence_optimization="per_class")
+  ev(split="test", calibration_split="val")   # калибровка на val, отчёт на test
+  ```
 - `ev.detection_metrics` хранит нетронутый вывод бэкенда; `ev.metrics` — те же
   precision / recall / f1 / AP, **адаптированные к нативным `Metrics`**: TP/FP/FN
   восстанавливаются как дробные числа из количества эталонных рамок класса, чтобы
   дашборды и графики CI продолжали работать. В этом режиме `cohen_kappa` равен
-  `-1`, а порог `confidence` по классу — `0.0` (рабочая точка задаётся внутри
-  бэкенда).
+  `-1`, а порог `confidence` по классу — `0.0`, если его не задал
+  `calibration_split`.
 - **Матрица ошибок** — бэкенд `"ultralytics"` заполняет `ev.cm` / `ev.class_labels`
   собственной логикой Ultralytics (numpy-порт `ConfusionMatrix.process_batch` с
   дефолтами conf 0.25 / IoU 0.45 — матрица, которую рисует `model.val()`),

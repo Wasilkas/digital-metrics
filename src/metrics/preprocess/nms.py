@@ -90,9 +90,10 @@ def apply_nms(
     boxes_all = preds_df[_BBOX_COLS].to_numpy(np.float32)
     labels_all = preds_df["instance_label"].to_numpy(dtype=object)
     conf_all = preds_df["confidence"].to_numpy()
-    index_all = preds_df.index.to_numpy()
 
-    keep_indices: list[int] = []
+    # Positional keep mask, so the result is independent of the index (duplicate
+    # labels are safe) and preserves the original row order.
+    keep_mask = np.zeros(len(preds_df), dtype=bool)
 
     for raw_positions in preds_df.groupby("image_name", sort=False).indices.values():
         # Sort this image's rows by confidence descending (stable, matching the
@@ -123,6 +124,6 @@ def apply_nms(
                     if iou_mat[i, j] >= cross_class_iou_threshold:
                         suppressed[j] = True
 
-        keep_indices.extend(index_all[order[~suppressed]].tolist())
+        keep_mask[order[~suppressed]] = True
 
-    return preds_df.loc[keep_indices]
+    return preds_df[keep_mask]

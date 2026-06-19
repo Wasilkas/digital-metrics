@@ -192,6 +192,9 @@ def plot_confidence_intervals(
             os.makedirs(parent, exist_ok=True)
         plt.savefig(save_path, bbox_inches="tight", dpi=300)
         logger.info(f"Confidence interval plot saved to {save_path}")
+        # Release the figure: get_dashboards renders several per run, and leaving
+        # them open leaks memory / trips matplotlib's ">20 figures" warning.
+        plt.close(fig)
     else:
         plt.show()
 

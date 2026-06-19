@@ -14,7 +14,9 @@ import pytest
 
 from metrics import DetectionMetrics, Evaluation
 from metrics.backends.ultralytics_metrics import (
+    _conf_at_max_f1,
     _confusion_process_batch,
+    _read_prf1_at_conf,
     compute_ultralytics_confusion_matrix,
 )
 
@@ -188,3 +190,58 @@ def test_backend_mode_populates_metrics_when_installed(
         assert ev.class_labels == [*ev.classes, "background"]
     else:
         assert ev.cm is None  # torchmetrics has no confusion matrix
+
+
+# ── Backend calibration (read P/R/F1 at the val-calibrated confidence) ──────────
+
+
+def test_read_prf1_at_conf_interpolates() -> None:
+    x = np.linspace(0.0, 1.0, 11)  # 0.0, 0.1, ..., 1.0
+    p_curve = x.copy()  # precision rises with confidence
+    r_curve = 1.0 - x  # recall falls with confidence
+    f1_curve = np.full_like(x, 0.5)
+
+    p, r, f1 = _read_prf1_at_conf(p_curve, r_curve, f1_curve, x, 0.3)
+
+    assert p == pytest.approx(0.3)
+    assert r == pytest.approx(0.7)
+    assert f1 == pytest.approx(0.5)
+
+
+def test_conf_at_max_f1_returns_argmax_confidence() -> None:
+    x = np.linspace(0.0, 1.0, 11)
+    f1 = np.array([0.0, 0.1, 0.2, 0.9, 0.4, 0.3, 0.2, 0.1, 0.0, 0.0, 0.0])  # peak at idx 3
+    assert _conf_at_max_f1(f1, x) == pytest.approx(0.3)  # x[3]
+
+
+def test_backend_calibration_rejects_missing_split(
+    split_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    # The calibration-split validation runs before any Ultralytics call, so this
+    # raises without the extra installed.
+    gt_df, preds_df = split_dataset  # has 'val' and 'test', no 'train'
+    ev = Evaluation(preds_df, gt_df, backend="ultralytics")
+    with pytest.raises(ValueError, match="No ground-truth rows"):
+        ev(split="test", calibration_split="train")
+
+
+def test_ultralytics_backend_calibration_when_installed(
+    split_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    if importlib.util.find_spec("ultralytics") is None:
+        pytest.skip("ultralytics not installed")
+
+    gt_df, preds_df = split_dataset
+    base = Evaluation(preds_df, gt_df, backend="ultralytics")
+    base(split="test")  # self-selected operating point
+
+    cal = Evaluation(preds_df, gt_df, backend="ultralytics")
+    cal(split="test", calibration_split="val")  # operating point from val
+
+    assert cal.detection_metrics  # populated
+    assert cal.cm is not None  # confusion matrix still filled
+    assert set(cal.best_confidences) >= set(cal.detection_metrics)  # thresholds recorded
+    # AP is read over the full curve, so calibration must not change it.
+    for cls, dm in base.detection_metrics.items():
+        assert cal.detection_metrics[cls].ap50 == pytest.approx(dm.ap50)
+        assert cal.detection_metrics[cls].ap50_95 == pytest.approx(dm.ap50_95)

@@ -4,6 +4,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
+from ..grouping import image_row_indices
 from ..types import PredictMatch
 from .assignment import (
     MatchedPairs,
@@ -72,38 +73,48 @@ def match_boxes(
     # matrix columns stay aligned with the gt rows used in _build_matches.
     gt_df = gt_df.dropna(subset=_BBOX_COLS)
 
-    # Partition both frames by image in a single pass.  Per-image boolean
-    # masking inside the loop is O(images * rows); grouping is O(rows).
-    gt_groups = dict(tuple(gt_df.groupby("image_name", sort=False)))
-    preds_groups = dict(tuple(preds_df.groupby("image_name", sort=False)))
-    empty_gt = gt_df.iloc[:0]
-    empty_preds = preds_df.iloc[:0]
+    # Extract every column to numpy once over the whole frame, then slice each
+    # image's rows by positional index inside the loop.  Per-image DataFrame
+    # access (groupby chopping + df[cols]) is the dominant cost otherwise.
+    gt_bbox = gt_df[_BBOX_COLS].to_numpy(np.float32)
+    gt_label = gt_df["instance_label"].to_numpy(dtype=object)
+    gt_index = gt_df.index.to_numpy()
+    pred_bbox = preds_df[_BBOX_COLS].to_numpy(np.float32)
+    pred_label = preds_df["instance_label"].to_numpy(dtype=object)
+    pred_index = preds_df.index.to_numpy()
+    pred_conf = preds_df["confidence"].to_numpy(np.float64)
+
+    gt_rows = image_row_indices(gt_df)
+    pred_rows = image_row_indices(preds_df)
+    empty = np.empty(0, dtype=np.intp)
 
     for image_name in all_images:
-        gt = gt_groups.get(image_name, empty_gt)
-        preds = preds_groups.get(image_name, empty_preds)
+        g = gt_rows.get(image_name, empty)
+        p = pred_rows.get(image_name, empty)
 
-        if strategy == "greedy":
-            # Greedy consumes the highest-IoU GT in confidence order, so the
-            # IoU matrix must be built from confidence-sorted predictions.
-            preds = preds.sort_values(by="confidence", ascending=False)
+        if strategy == "greedy" and p.size > 1:
+            # Greedy consumes the highest-IoU GT in confidence order, so order
+            # rows by confidence descending; stable keeps ties in row order.
+            p = p[np.argsort(-pred_conf[p], kind="stable")]
 
-        gt_bboxes = gt[_BBOX_COLS].values.astype(np.float32)
-        pred_bboxes = preds[_BBOX_COLS].values.astype(np.float32)
-        iou_matrix = compute_iou_matrix(pred_bboxes, gt_bboxes)
+        iou_matrix = compute_iou_matrix(pred_bbox[p], gt_bbox[g])
 
-        pairs = _assign(strategy, iou_matrix, iou_threshold, preds, gt)
+        g_label, p_label = gt_label[g], pred_label[p]
+        pairs = _assign(strategy, iou_matrix, iou_threshold, p_label, g_label)
 
         # iou_prior records the closest cross-class GT for unmatched preds so
         # the confusion matrix captures label confusions; greedy and hungarian
         # always book an unmatched prediction as "background".
         _build_matches(
             matches,
-            gt,
-            preds,
             iou_matrix,
             pairs,
             iou_threshold,
+            g_label,
+            gt_index[g],
+            p_label,
+            pred_index[p],
+            pred_conf[p],
             cross_class_fp=strategy == "iou_prior",
         )
 
@@ -114,15 +125,13 @@ def _assign(
     strategy: MatchingStrategy,
     iou_matrix: npt.NDArray[np.float64],
     iou_threshold: float,
-    preds: pd.DataFrame,
-    gt: pd.DataFrame,
+    pred_labels: npt.NDArray[np.object_],
+    gt_labels: npt.NDArray[np.object_],
 ) -> MatchedPairs:
     """Dispatch to the geometric assignment kernel for the given strategy."""
     if strategy == "hungarian":
         return assign_hungarian(iou_matrix, iou_threshold)
     if strategy == "iou_prior":
-        pred_labels = preds["instance_label"].to_numpy(dtype=object)
-        gt_labels = gt["instance_label"].to_numpy(dtype=object)
         label_match = pred_labels[:, None] == gt_labels[None, :]
         return assign_iou_prior(iou_matrix, iou_threshold, valid_mask=label_match)
     return assign_greedy(iou_matrix, iou_threshold)
@@ -130,34 +139,31 @@ def _assign(
 
 def _build_matches(
     matches: dict[str, list[PredictMatch]],
-    gt: pd.DataFrame,
-    preds: pd.DataFrame,
     iou_matrix: npt.NDArray[np.float64],
     pairs: MatchedPairs,
     iou_threshold: float,
+    gt_labels: npt.NDArray[np.object_],
+    gt_indices: npt.NDArray[np.int64],
+    pred_labels: npt.NDArray[np.object_],
+    pred_indices: npt.NDArray[np.int64],
+    pred_confs: npt.NDArray[np.float64],
     *,
     cross_class_fp: bool,
 ) -> None:
     """Turn positional (pred, gt) pairs into PredictMatch records in place.
 
+    The label/index/confidence arrays are this image's rows, already sliced from
+    the whole-frame columns (and reordered to match ``iou_matrix`` row order).
     Matched predictions record the actual GT label (label mismatch is left for
     PredictMatch.type to classify as FP).  Unmatched predictions become FPs
     against "background"; when ``cross_class_fp`` is set, the closest GT label
     is recorded instead if it overlaps (IoU >= threshold) with a different
     class.  Any GT left unmatched becomes an FN.
     """
-    n_preds = len(preds)
-    n_gts = len(gt)
+    n_preds = len(pred_labels)
+    n_gts = len(gt_labels)
     pred_to_gt = dict(pairs)
     matched_gts = {gt_j for _, gt_j in pairs}
-
-    # Extract columns to numpy once; per-row .iloc[...] builds a Series each
-    # call and dominates the loop on large images.
-    gt_labels = gt["instance_label"].to_numpy(dtype=object)
-    gt_indices = gt.index.to_numpy()
-    pred_labels = preds["instance_label"].to_numpy(dtype=object)
-    pred_indices = preds.index.to_numpy()
-    pred_confs = preds["confidence"].to_numpy(dtype=np.float64)
 
     for pred_pos in range(n_preds):
         pred_label = str(pred_labels[pred_pos])

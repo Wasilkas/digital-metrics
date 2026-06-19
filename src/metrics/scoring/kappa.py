@@ -2,28 +2,37 @@ import warnings
 from collections.abc import Sequence
 
 import numpy as np
+import numpy.typing as npt
 from sklearn.metrics import cohen_kappa_score
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+BoxArray = npt.NDArray[np.floating] | Sequence[Sequence[float]]
+
 
 def compute_kappa(
-    boxes_a: list[Sequence[float]],
-    boxes_b: list[Sequence[float]],
+    boxes_a: BoxArray,
+    boxes_b: BoxArray,
     image_shape: tuple[int, int],
 ) -> float:
     """Compute Cohen's kappa between two sets of bounding boxes via pixel masks.
 
     Args:
-        boxes_a: Ground-truth boxes, each as [x1, y1, x2, y2].
-        boxes_b: Predicted boxes, each as [x1, y1, x2, y2].
+        boxes_a: Ground-truth boxes as an (n, 4) array (or sequence) of
+            [x1, y1, x2, y2].
+        boxes_b: Predicted boxes as an (n, 4) array (or sequence) of
+            [x1, y1, x2, y2].
         image_shape: (width, height) of the image.
 
     Returns:
         Cohen's kappa score, or 0.0 if undefined.
     """
-    mask_gt = np.zeros(image_shape, dtype=np.uint8)
-    mask_pred = np.zeros(image_shape, dtype=np.uint8)
+    # Masks are (height, width) so the [y, x] slicing below indexes the right
+    # axes; building them as (width, height) would transpose the boxes and clip
+    # them on the wrong axis for non-square images.
+    width, height = image_shape
+    mask_gt = np.zeros((height, width), dtype=np.uint8)
+    mask_pred = np.zeros((height, width), dtype=np.uint8)
 
     for bbox in boxes_a:
         x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])

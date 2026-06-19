@@ -15,6 +15,8 @@ from .backends import (
     Backend,
     compute_detection_metrics,
     compute_ultralytics_confusion_matrix,
+    compute_ultralytics_metrics,
+    find_ultralytics_confidence,
 )
 from .inference import ImageNameMode, predict_on_images
 from .matching import (
@@ -141,9 +143,12 @@ class Evaluation:
                 unpreprocessed predictions, the way YOLO val does) and expose the
                 results both as ``detection_metrics`` (per-class
                 :class:`DetectionMetrics`) and as native ``metrics`` adapted so the
-                dashboards keep working. The external backends pick their own
-                operating point, so ``calibration_split`` / ``find_best_confs`` and
-                the confusion matrix do not apply in backend mode.
+                dashboards keep working. By default a backend self-selects its
+                operating point on the eval split; pass ``calibration_split`` to
+                instead read P/R/F1 at the F1-optimal confidence found on that
+                split (``"ultralytics"`` only — AP stays over the full curve;
+                ``"torchmetrics"`` ignores it with a warning). ``find_best_confs``
+                does not apply in backend mode.
             predict_kwargs: Extra keyword arguments forwarded to Ultralytics'
                 ``model.predict`` when predictions are auto-generated from
                 ``weights_path`` (e.g. ``{"conf": 0.25, "imgsz": 1280, "half":
@@ -446,13 +451,7 @@ class Evaluation:
         calibration_split: str | None = None,
     ) -> None:
         if self._backend is not None:
-            if calibration_split is not None:
-                logger.warning(
-                    f"calibration_split={calibration_split!r} is ignored with "
-                    f"backend={self._backend!r}; the external backend selects its own "
-                    "operating point."
-                )
-            self._run_backend(split)
+            self._run_backend(split, calibration_split=calibration_split)
             return
 
         self._ensure_predictions(self._splits_to_predict(split, calibration_split))
@@ -536,7 +535,7 @@ class Evaluation:
             split_image_names=split_image_names,
         )
 
-    def _run_backend(self, split: str) -> None:
+    def _run_backend(self, split: str, *, calibration_split: str | None = None) -> None:
         """Populate ``detection_metrics``/``metrics`` from the selected backend.
 
         The raw backend output is kept on ``detection_metrics``; ``metrics`` holds
@@ -544,9 +543,25 @@ class Evaluation:
         CI plots work unchanged. The ``"ultralytics"`` backend also fills the
         confusion matrix (via Ultralytics' own ``ConfusionMatrix`` logic);
         ``"torchmetrics"`` has no confusion matrix, so it is cleared.
+
+        When ``calibration_split`` is given, the ``"ultralytics"`` backend reads
+        P/R/F1 at the confidence calibrated on that split (AP stays over the full
+        curve). ``"torchmetrics"`` does not support calibration yet, so the split
+        is ignored with a warning and the backend self-selects.
         """
         assert self._backend is not None
-        self.detection_metrics = self._compute_external(self._backend, split)
+        if calibration_split is not None and self._backend != "ultralytics":
+            logger.warning(
+                f"calibration_split={calibration_split!r} is not supported for "
+                f"backend={self._backend!r} yet; ignoring it (the backend self-selects "
+                "its operating point)."
+            )
+            calibration_split = None
+
+        if calibration_split is None:
+            self.detection_metrics = self._compute_external(self._backend, split)
+        else:
+            self.detection_metrics = self._calibrate_backend(split, calibration_split)
         self.metrics = self._adapt_detection_metrics(self.detection_metrics)
         if self._backend == "ultralytics":
             assert self.gt_df is not None
@@ -608,19 +623,16 @@ class Evaluation:
             )
         return result
 
-    def _calibrate(self, calibration_split: str) -> dict[str, float]:
-        """Find per-class confidence thresholds on *calibration_split*.
+    def _calibration_gt(self, calibration_split: str) -> pd.DataFrame:
+        """Return the validated ground truth for *calibration_split*.
 
-        Args:
-            calibration_split: Name of the split column value to calibrate on
-                (e.g. "val"). split_df must have a "split" column.
-
-        Returns:
-            Dict mapping class name → best confidence threshold.
+        Shared by the native and backend calibration paths. ``self.gt_df`` (the
+        evaluation split) must already be set, so leakage can be detected.
 
         Raises:
-            ValueError: If split_df has no "split" column, or if
-                calibration_split has no matching rows.
+            ValueError: If split_df has no "split" column, the calibration split
+                has no rows, or it shares an ``image_name`` with the evaluation
+                split (which would leak calibration data into the evaluation).
         """
         if "split" not in self.split_df.columns:
             raise ValueError(
@@ -647,7 +659,63 @@ class Evaluation:
                 "into the evaluation. Fix the 'split' labels in split_df so each "
                 "image_name belongs to exactly one split."
             )
+        return cal_gt
 
+    def _calibrate_backend(self, split: str, calibration_split: str) -> dict[str, DetectionMetrics]:
+        """Ultralytics backend metrics with the operating point calibrated on val.
+
+        Finds the F1-optimal confidence on ``calibration_split`` (per the
+        configured ``confidence_optimization`` mode), then reads the eval split's
+        P/R/F1 at that confidence while AP stays over the full curve. Also records
+        the chosen threshold(s) on ``best_confidences``.
+        """
+        self._ensure_predictions(self._splits_to_predict(split, calibration_split))
+        self._define_gt(split)
+        assert self.gt_df is not None
+        self._validate_df(self._raw_preds_df, self.gt_df)
+        cal_gt = self._calibration_gt(calibration_split)
+
+        cal_image_names = cal_gt["image_name"].unique().tolist()
+        logger.info(
+            f"Calibrating '{self._backend}' confidence on '{calibration_split}' "
+            f"({len(cal_gt)} GT rows, mode={self._confidence_optimization})..."
+        )
+        conf = find_ultralytics_confidence(
+            cal_gt,
+            self._raw_preds_df,
+            classes=self.classes,
+            split_image_names=cal_image_names,
+            mode=self._confidence_optimization,
+        )
+        if isinstance(conf, dict):
+            self._best_confidences = {c: conf.get(c, 0.0) for c in self.classes}
+        else:
+            self._best_confidences = {c: conf for c in self.classes}
+
+        split_image_names = self.gt_df["image_name"].unique().tolist()
+        return compute_ultralytics_metrics(
+            self.gt_df,
+            self._raw_preds_df,
+            classes=self.classes,
+            split_image_names=split_image_names,
+            conf_threshold=conf,
+        )
+
+    def _calibrate(self, calibration_split: str) -> dict[str, float]:
+        """Find per-class confidence thresholds on *calibration_split*.
+
+        Args:
+            calibration_split: Name of the split column value to calibrate on
+                (e.g. "val"). split_df must have a "split" column.
+
+        Returns:
+            Dict mapping class name → best confidence threshold.
+
+        Raises:
+            ValueError: If split_df has no "split" column, or if
+                calibration_split has no matching rows.
+        """
+        cal_gt = self._calibration_gt(calibration_split)
         cal_image_names = cal_gt["image_name"].unique().tolist()
         logger.info(
             f"Calibrating confidence thresholds on '{calibration_split}' split "
@@ -720,39 +788,47 @@ class Evaluation:
                 )
 
     def _compute_cohen_kappa(self) -> None:
+        # Sentinel -1 for every class (including any absent from this split), so
+        # the column is uniform when kappa is skipped.
+        if self._skip_cohen_kappa:
+            for m in self.metrics.values():
+                m.cohen_kappa = -1
+            return
+
         assert self.gt_df is not None
+        missing = {"image_width", "image_height"} - set(self.gt_df.columns)
+        if missing:
+            raise ValueError(
+                f"Cohen's kappa needs the optional column(s) {sorted(missing)} in the "
+                "ground-truth DataFrame (image pixel dimensions for the masks). Add them "
+                "or keep skip_cohen_kappa=True."
+            )
+
+        bbox_cols = ["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
         for c in tqdm(
             self.gt_df["instance_label"].unique(),
             desc="Computing Cohen's Kappa",
             total=self.gt_df["instance_label"].nunique(),
         ):
-            if self._skip_cohen_kappa:
-                self.metrics[c].cohen_kappa = -1
-                continue
-
             kappas: list[float] = []
-            class_gt = self.gt_df[self.gt_df["instance_label"] == c].copy()
-            preds_gt = self.preds_df[self.preds_df["instance_label"] == c].copy()
+            class_gt = self.gt_df[self.gt_df["instance_label"] == c]
+            preds_gt = self.preds_df[self.preds_df["instance_label"] == c]
 
             for image_name in class_gt["image_name"].unique():
-                gt_boxes = class_gt[class_gt["image_name"] == image_name].copy()
-                gt_box_list = [
-                    row[["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]]
-                    for _, row in gt_boxes.iterrows()
-                ]
-                pred_boxes = preds_gt[preds_gt["image_name"] == image_name].copy()
-                pred_box_list = [
-                    row[["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]]
-                    for _, row in pred_boxes.iterrows()
-                ]
+                gt_boxes = class_gt[class_gt["image_name"] == image_name]
+                pred_boxes = preds_gt[preds_gt["image_name"] == image_name]
+                # Plain (n, 4) arrays: compute_kappa indexes each box positionally.
+                gt_box_list = gt_boxes[bbox_cols].to_numpy(np.float64)
+                pred_box_list = pred_boxes[bbox_cols].to_numpy(np.float64)
+                # Use this image's own dimensions, not the first image's.
                 kappa = compute_kappa(
                     gt_box_list,
                     pred_box_list,
-                    (int(class_gt.iloc[0]["image_width"]), int(class_gt.iloc[0]["image_height"])),
+                    (int(gt_boxes.iloc[0]["image_width"]), int(gt_boxes.iloc[0]["image_height"])),
                 )
                 kappas.append(kappa)
 
-            self.metrics[c].cohen_kappa = float(np.mean(kappas))
+            self.metrics[c].cohen_kappa = float(np.mean(kappas)) if kappas else -1.0
             logger.debug(f"Kappa for {c}: {self.metrics[c].cohen_kappa}")
 
     def _get_metrics_as_df(self) -> pd.DataFrame:
@@ -826,6 +902,11 @@ class Evaluation:
             DataFrame with box records for visual inspection.
         """
         if self.cm is None:
+            if self._backend is not None:
+                raise ValueError(
+                    f"get_topk_confusions needs a confusion matrix, but the "
+                    f"'{self._backend}' backend does not produce one."
+                )
             logger.info("Confusion matrix not yet computed; running evaluation.")
             self._call()
 
@@ -834,7 +915,8 @@ class Evaluation:
         confusion_counts = self.cm[class_index, :].flatten() + self.cm[:, class_index].flatten()
 
         confusion_df = pd.DataFrame(confusion_counts, index=self.class_labels, columns=["count"])
-        confusion_df = confusion_df.drop(main_class)
+        # Exclude the class itself and the background bucket from the confusions.
+        confusion_df = confusion_df.drop(index=[main_class, "background"], errors="ignore")
         top_k = confusion_df.nlargest(k, "count")
         logger.info(f"Top {k} confusions for {main_class!r}: {top_k.index.tolist()}")
 
@@ -860,18 +942,27 @@ class Evaluation:
             (gt_df, preds_df) with a "predict_type" column.
         """
         if self.gt_df is None:
-            self._call(find_best_confs=find_best_confs)
             logger.info("Ground-truth DataFrame not available; running evaluation.")
+            self._call(find_best_confs=find_best_confs)
 
         assert self.gt_df is not None
-        self.gt_df["predict_type"] = "TP"
-        self.preds_df["predict_type"] = "TP"
 
-        for match_list in self._matches.values():
-            for match in match_list:
-                if match.type == "FN":
-                    self.gt_df.loc[match.gt_index, "predict_type"] = match.type
-                else:
-                    self.preds_df.loc[match.pred_index, "predict_type"] = match.type
+        # Annotate from the match records (before confidence slicing, so every
+        # prediction and every GT box is classified). Predictions are keyed by
+        # pred_index, GT boxes by gt_index; GT takes TP/FN only (a cross-class FP
+        # also references a GT index, but that GT's own status is its TP/FN record).
+        matches = self.unfiltered_matches or self._matches
+        pred_type: dict[int, str] = {}
+        gt_type: dict[int, str] = {}
+        for records in matches.values():
+            for m in records:
+                if m.pred_index != -1:
+                    pred_type[m.pred_index] = m.type
+                if m.gt_index != -1 and m.type in ("TP", "FN"):
+                    gt_type[m.gt_index] = m.type
 
-        return self.gt_df, self.preds_df
+        gt_df = self.gt_df.copy()
+        preds_df = self.preds_df.copy()
+        gt_df["predict_type"] = [gt_type.get(i, "FN") for i in gt_df.index]
+        preds_df["predict_type"] = [pred_type.get(i, "FP") for i in preds_df.index]
+        return gt_df, preds_df
