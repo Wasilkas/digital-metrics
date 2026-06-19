@@ -138,6 +138,8 @@ Both DataFrames share these columns:
 | `split` | str | `train` / `val` / `test` (GT only) |
 | `confidence` | float | Detection score (predictions only) |
 | `image_path` | str | Full path to the image file (GT only; required only by `Evaluation.predict_to_dataframe`) |
+| `image_width` | int | Image width in pixels (GT only; required only when `skip_cohen_kappa=False`) |
+| `image_height` | int | Image height in pixels (GT only; required only when `skip_cohen_kappa=False`) |
 
 ---
 
@@ -229,12 +231,19 @@ and callable directly.
 `compute_metrics_torchmetrics(split)` directly). In `backend` mode the call scores
 the split over `_raw_preds_df`, stores the raw result on `detection_metrics`, and
 adapts it onto native `Metrics` (reconstructing float TP/FP/FN from the per-class
-GT count) so `get_dashboards` / `plot_confidence_intervals` work unchanged. The
-backends choose their own operating point, so `calibration_split` /
-`find_best_confs` do not apply. The `"ultralytics"` backend also fills `cm` /
-`class_labels` via `compute_ultralytics_confusion_matrix` (Ultralytics'
-`ConfusionMatrix.process_batch`, ported; conf 0.25 / IoU 0.45, transposed to the
-sklearn row=GT/col=pred convention); `"torchmetrics"` has no CM (`cm` is `None`).
+GT count) so `get_dashboards` / `plot_confidence_intervals` work unchanged. By
+default a backend self-selects its operating point on the eval split;
+`find_best_confs` does not apply. Passing `calibration_split` enables proper
+"calibrate on val, report on test" for the `"ultralytics"` backend: the F1-optimal
+confidence is found on the calibration split (`find_ultralytics_confidence`, per
+`confidence_optimization` mode) and `compute_ultralytics_metrics(..., conf_threshold=)`
+reads the eval split's P/R/F1 at that confidence off the ap_per_class curves — AP
+stays over the full curve, and the chosen threshold(s) land on `best_confidences`.
+`"torchmetrics"` ignores `calibration_split` with a warning (not supported yet).
+The `"ultralytics"` backend also fills `cm` / `class_labels` via
+`compute_ultralytics_confusion_matrix` (Ultralytics' `ConfusionMatrix.process_batch`,
+ported; conf 0.25 / IoU 0.45, transposed to the sklearn row=GT/col=pred convention);
+`"torchmetrics"` has no CM (`cm` is `None`).
 
 - **`"ultralytics"`** (`backends/ultralytics_metrics.py`, `pip install
   digital-metrics[ultralytics]`) — YOLO-comparable. Boxes go through a faithful
@@ -473,10 +482,18 @@ All of the following must exist after any refactor:
 - `DetectionMetrics` exported from `metrics` — shared per-class result model
   (`precision/recall/f1/ap50/ap75/ap50_95`) returned by both backends;
   `YoloMetrics` is kept as a backward-compatible alias of it
-- `compute_ultralytics_metrics(gt_df, preds_df, classes, split_image_names)`
-  exported from `metrics` — optional YOLO-comparable P/R/F1/AP via Ultralytics'
-  own `ap_per_class`; requires the `ultralytics` extra (lazy import, raises
+- `compute_ultralytics_metrics(gt_df, preds_df, classes, split_image_names,
+  conf_threshold)` exported from `metrics` — optional YOLO-comparable P/R/F1/AP
+  via Ultralytics' own `ap_per_class`. `conf_threshold` (`None` | `float` |
+  `dict[str, float]`) reads P/R/F1 off the per-class curves at a given confidence
+  (e.g. one calibrated on val) instead of the in-sample max-F1 point; AP is always
+  over the full curve. Requires the `ultralytics` extra (lazy import, raises
   `ImportError` with an install hint when missing)
+- `find_ultralytics_confidence(gt_df, preds_df, classes, split_image_names, mode)`
+  exported from `metrics` — calibration helper: the F1-optimal confidence on a
+  split from Ultralytics' F1-vs-confidence curves. `mode="global"` returns a
+  `float` (max mean per-class F1), `"per_class"` a `dict[str, float]`; pair with
+  `compute_ultralytics_metrics(conf_threshold=...)`. Requires the `ultralytics` extra
 - `compute_ultralytics_confusion_matrix(gt_df, preds_df, classes,
   split_image_names, conf, iou_thres)` exported from `metrics` — optional
   confusion matrix via a numpy port of Ultralytics'

@@ -33,6 +33,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
+from ..grouping import image_row_indices
 from ..types import DetectionMetrics
 
 _BBOX_COLS = ["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
@@ -125,8 +126,16 @@ def compute_torchmetrics_metrics(
         images |= set(split_image_names)
     scoped_preds = preds_df[preds_df["image_name"].isin(images)]
 
-    gt_groups = dict(tuple(gt_df.groupby("image_name", sort=False)))
-    pred_groups = dict(tuple(scoped_preds.groupby("image_name", sort=False)))
+    # Map labels and extract boxes/conf to numpy once over the whole frame,
+    # then slice each image's rows by positional index (avoids per-image
+    # groupby chopping and Series.map).
+    gt_cls_all = gt_df["instance_label"].map(class_to_idx).to_numpy(np.int64)
+    gt_bbox_all = gt_df[_BBOX_COLS].to_numpy(np.float32)
+    pred_cls_arr = scoped_preds["instance_label"].map(class_to_idx).to_numpy(np.int64)
+    pred_conf_arr = scoped_preds["confidence"].to_numpy(np.float32)
+    pred_bbox_all = scoped_preds[_BBOX_COLS].to_numpy(np.float32)
+    gt_rows = image_row_indices(gt_df)
+    pred_rows = image_row_indices(scoped_preds)
 
     empty_boxes = torch.zeros((0, 4), dtype=torch.float32)
     empty_labels = torch.zeros((0,), dtype=torch.int64)
@@ -137,28 +146,26 @@ def compute_torchmetrics_metrics(
 
     # preds_list[i] and target_list[i] must describe the same image, in order.
     for image_name in sorted(images):
-        g = gt_groups.get(image_name)
-        if g is not None and len(g):
-            gt_cls = g["instance_label"].map(class_to_idx).to_numpy(np.int64)
+        gi = gt_rows.get(image_name)
+        if gi is not None and len(gi):
+            gt_cls = gt_cls_all[gi]
             gt_class_idxs.update(int(c) for c in gt_cls)
             target_list.append(
                 {
-                    "boxes": torch.tensor(g[_BBOX_COLS].to_numpy(np.float32)),
+                    "boxes": torch.tensor(gt_bbox_all[gi]),
                     "labels": torch.tensor(gt_cls),
                 }
             )
         else:
             target_list.append({"boxes": empty_boxes, "labels": empty_labels})
 
-        p = pred_groups.get(image_name)
-        if p is not None and len(p):
+        pi = pred_rows.get(image_name)
+        if pi is not None and len(pi):
             preds_list.append(
                 {
-                    "boxes": torch.tensor(p[_BBOX_COLS].to_numpy(np.float32)),
-                    "scores": torch.tensor(p["confidence"].to_numpy(np.float32)),
-                    "labels": torch.tensor(
-                        p["instance_label"].map(class_to_idx).to_numpy(np.int64)
-                    ),
+                    "boxes": torch.tensor(pred_bbox_all[pi]),
+                    "scores": torch.tensor(pred_conf_arr[pi]),
+                    "labels": torch.tensor(pred_cls_arr[pi]),
                 }
             )
         else:
@@ -181,7 +188,9 @@ def compute_torchmetrics_metrics(
     # precision: (T iou, R recall, K class, A area, M max-det). The K axis is
     # aligned with result["classes"] (sorted unique label ids present).
     precision: npt.NDArray[np.float64] = result["precision"].cpu().numpy()
-    res_classes = [int(c) for c in result["classes"].cpu().numpy().tolist()]
+    # With a single class present, ``result["classes"]`` is a 0-d tensor whose
+    # .tolist() is a bare int; atleast_1d keeps the comprehension iterable.
+    res_classes = [int(c) for c in np.atleast_1d(result["classes"].cpu().numpy()).tolist()]
 
     out: dict[str, DetectionMetrics] = {}
     for k, cls_idx in enumerate(res_classes):
