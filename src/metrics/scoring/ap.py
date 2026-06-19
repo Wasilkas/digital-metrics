@@ -4,10 +4,14 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from .assignment import assign_greedy, assign_hungarian, assign_iou_prior
-from .iou import compute_iou_matrix
-from .matching import MatchingStrategy
-from .types import Metrics
+from ..matching import (
+    MatchingStrategy,
+    assign_greedy,
+    assign_hungarian,
+    assign_iou_prior,
+    compute_iou_matrix,
+)
+from ..types import Metrics
 
 _IOU_THRESHOLDS = [round(x, 2) for x in np.arange(0.50, 0.96, 0.05)]
 

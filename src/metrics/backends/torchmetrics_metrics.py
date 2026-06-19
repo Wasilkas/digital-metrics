@@ -33,7 +33,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from .types import DetectionMetrics
+from ..types import DetectionMetrics
 
 _BBOX_COLS = ["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
 # Ten IoU thresholds, exactly as COCO / Ultralytics val (linspace(0.5, 0.95, 10)).

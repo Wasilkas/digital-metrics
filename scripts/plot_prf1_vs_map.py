@@ -24,8 +24,8 @@ import pandas as pd
 from loguru import logger
 
 from metrics import Evaluation, compute_detection_metrics
-from metrics.confidence import find_best_global_confidence
 from metrics.matching import match_boxes
+from metrics.scoring import find_best_global_confidence
 from metrics.types import PredictMatch
 
 plt.switch_backend("Agg")

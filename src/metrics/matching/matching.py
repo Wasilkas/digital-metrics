@@ -4,6 +4,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
+from ..types import PredictMatch
 from .assignment import (
     MatchedPairs,
     assign_greedy,
@@ -11,7 +12,6 @@ from .assignment import (
     assign_iou_prior,
 )
 from .iou import compute_iou_matrix
-from .types import PredictMatch
 
 MatchingStrategy = Literal["greedy", "hungarian", "iou_prior"]
 

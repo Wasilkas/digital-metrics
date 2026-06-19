@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from metrics.ap import APMethod, compute_ap, compute_map
+from metrics.scoring import APMethod, compute_ap, compute_map
 from metrics.types import Metrics
 
 

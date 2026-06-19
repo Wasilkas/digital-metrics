@@ -296,6 +296,47 @@ threshold; raw vs. COCO-envelope precision). See
 
 ---
 
+## `Evaluation` with an external backend
+
+The same two backends are wired into `Evaluation`, so you can choose the metrics
+engine and keep the rest of the workflow — dashboards, CI plots, confusion
+matrix — unchanged. Pass `backend=` to the constructor, or call a backend
+directly:
+
+```python
+from metrics import Evaluation
+
+ev = Evaluation(preds_df, split_df, backend="ultralytics")  # or "torchmetrics"
+ev(split="test")
+
+ev.detection_metrics   # raw dict[str, DetectionMetrics] from the backend
+ev.metrics             # the same numbers adapted to native Metrics
+ev.get_dashboards()    # works — built from the backend's results
+
+# Or run a backend without switching the whole Evaluation over:
+yolo = ev.compute_metrics_ultralytics(split="test")
+coco = ev.compute_metrics_torchmetrics(split="test")
+```
+
+- `backend=None` (default) runs the native pipeline. `"ultralytics"` /
+  `"torchmetrics"` score the split over the **raw** predictions (the way
+  `model.val()` does) and pick their own operating point, so `calibration_split`
+  / `find_best_confs` and the preprocessing thresholds do not apply.
+- `ev.detection_metrics` holds the untouched backend output; `ev.metrics` holds
+  the same precision / recall / f1 / AP **adapted onto native `Metrics`** — TP/FP/FN
+  are reconstructed as floats from the per-class GT count so the dashboards and CI
+  plots keep working. In this mode `cohen_kappa` is `-1` and the per-class
+  `confidence` threshold is `0.0` (the backend's operating point is internal).
+- **Confusion matrix** — the `"ultralytics"` backend fills `ev.cm` /
+  `ev.class_labels` using Ultralytics' own confusion-matrix logic (a numpy port of
+  `ConfusionMatrix.process_batch`, at its conf 0.25 / IoU 0.45 defaults — the
+  matrix `model.val()` plots), transposed to this library's row = GT / column =
+  prediction convention. `"torchmetrics"` has no confusion matrix, so `ev.cm` is
+  `None` and `get_dashboards` skips that sheet. The standalone
+  `compute_ultralytics_confusion_matrix(gt_df, preds_df)` is also public.
+
+---
+
 ## From YOLO weights to predictions
 
 If you have an Ultralytics model rather than a predictions table, run inference
@@ -316,8 +357,16 @@ ev(split="val")                                    # evaluate as usual
   that path (`Path(image_path).name`), so predictions join back to the ground
   truth automatically. `instance_label` comes from the model's own class names;
   boxes are pixel `xyxy`.
+- `split=` chooses which images to run on: a single split (`"val"`), a list of
+  splits (`["test", "val"]`), or `None` for every image in `split_df`. (When
+  predictions are auto-generated from `weights_path`, `Evaluation` does this for
+  you — running only the evaluation split plus any `calibration_split`.)
 - The model runs at `conf=0.001`, `iou=0.7` by default (YOLO val settings) so the
   full precision-recall curve is available downstream; raise `conf=` to pre-filter.
+- Any extra `model.predict` arguments pass straight through as keyword arguments —
+  `ev.predict_to_dataframe("best.pt", split="val", imgsz=1280, half=True, augment=True)`
+  — or, in the auto-predict flow, via the constructor's
+  `predict_kwargs={"imgsz": 1280, "half": True}`.
 - `predict_to_dataframe` also **returns** the predictions DataFrame, so you can
   save it (`df.to_csv(...)`) or feed it to
   [`compute_detection_metrics`](#external-metrics-backends-single-entry-point).
@@ -402,6 +451,8 @@ Evaluation(
     ap_method: APMethod = "interp",                              # "interp" | "continuous"
     confidence_optimization: ConfidenceOptimization = "per_class",  # "per_class" | "global"
     weights_path: str | None = None,   # YOLO weights to auto-predict from when preds_df is None
+    backend: Backend | None = None,    # None = native; "ultralytics" | "torchmetrics"
+    predict_kwargs: dict | None = None,  # extra model.predict(...) kwargs for the weights flow
 )
 ```
 
@@ -409,8 +460,8 @@ The defaults are YOLO-like (`matching_strategy="iou_prior"`, `ap_method="interp"
 
 `preds_df` accepts a DataFrame, a CSV path, or `None`. Pass `None` together with
 `weights_path` to run the **whole pipeline from weights** — the first call
-generates predictions from the model (over `split_df["image_path"]`), then
-evaluates:
+generates predictions from the model over just the splits it will use (the
+evaluation split plus any `calibration_split`), then evaluates:
 
 ```python
 ev = Evaluation(None, "ground_truth.csv", weights_path="best.pt")
@@ -427,6 +478,16 @@ column in `split_df` — no extra list needs to be passed.
 `confidence_optimization` — `"per_class"` (default) tunes one threshold per
 class; `"global"` picks a single YOLO-style threshold shared by all classes
 (see [Confidence-threshold optimization](#confidence-threshold-optimization)).
+
+`backend` — `None` (default) runs the native pipeline; `"ultralytics"` /
+`"torchmetrics"` make `Evaluation` score the split through that external library
+instead (see [`Evaluation` with an external backend](#evaluation-with-an-external-backend)).
+
+`predict_kwargs` — extra keyword arguments forwarded to Ultralytics'
+`model.predict` when predictions are auto-generated from `weights_path` (e.g.
+`{"conf": 0.25, "imgsz": 1280, "half": True, "augment": True}`). Ignored when
+`preds_df` is provided. For one-off control, pass the same kwargs straight to
+[`predict_to_dataframe`](#from-yolo-weights-to-predictions).
 
 `preprocess_preds_conf_threshold` — drop predictions with `confidence <
 threshold` before evaluation.

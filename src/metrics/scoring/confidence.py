@@ -3,7 +3,7 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 
-from .types import PredictMatch
+from ..types import PredictMatch
 
 ConfidenceOptimization = Literal["per_class", "global"]
 

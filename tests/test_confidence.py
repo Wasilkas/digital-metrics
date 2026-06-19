@@ -4,12 +4,12 @@ import pandas as pd
 import pytest
 
 from metrics import Evaluation
-from metrics.confidence import (
+from metrics.matching import match_boxes
+from metrics.scoring import (
     find_best_confidences,
     find_best_global_confidence,
     slice_by_conf,
 )
-from metrics.matching import match_boxes
 from metrics.types import PredictMatch
 
 

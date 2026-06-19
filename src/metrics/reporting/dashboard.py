@@ -10,7 +10,7 @@ from loguru import logger
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from .types import Metrics
+from ..types import Metrics
 
 
 def _metrics_as_df(metrics: dict[str, Metrics]) -> pd.DataFrame:
@@ -21,7 +21,7 @@ def _metrics_as_df(metrics: dict[str, Metrics]) -> pd.DataFrame:
 def get_dashboards(
     metrics: dict[str, Metrics],
     split_df: pd.DataFrame,
-    cm: npt.NDArray[np.int64],
+    cm: npt.NDArray[np.int64] | None,
     class_labels: list[str],
     suffix: str = "default",
     *,
@@ -34,12 +34,14 @@ def get_dashboards(
     Args:
         metrics: Per-class Metrics objects.
         split_df: Ground-truth split DataFrame (used for example counts).
-        cm: Confusion matrix array.
+        cm: Confusion matrix array, or ``None`` when unavailable (e.g. an external
+            backend, which does not produce one). The CM sheet is then skipped.
         class_labels: Class label list including background.
         suffix: Filename suffix for saved files.
         save_to_excel: Whether to write Excel files.
         path: Output directory.
-        save_confusion_matrix: Whether to save the confusion matrix to Excel.
+        save_confusion_matrix: Whether to save the confusion matrix to Excel
+            (ignored when ``cm`` is ``None``).
 
     Returns:
         (devs, dtrk) — full analyst dashboard and production dashboard.
@@ -114,7 +116,7 @@ def get_dashboards(
 
     logger.info("Saving results...")
 
-    if save_confusion_matrix:
+    if save_confusion_matrix and cm is not None:
         cm_df = pd.DataFrame(cm, index=class_labels, columns=class_labels)
         cm_df.to_excel(os.path.join(path, f"matrix_{suffix}.xlsx"))
 
