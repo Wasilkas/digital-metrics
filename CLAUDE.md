@@ -60,7 +60,8 @@ re-exports its public names, so internal and external code imports from the
 subpackage (e.g. ``from .scoring import compute_map``), and the top-level
 ``metrics/__init__.py`` keeps the public API flat (``from metrics import ...``).
 ``types.py`` and ``ci.py`` stay at the top level as the shared foundation
-(``types`` depends on ``ci``), alongside the ``evaluation`` orchestrator.
+(``types`` depends on ``ci``), alongside the ``evaluation`` orchestrator and the
+``calibration`` collaborator it delegates confidence-threshold selection to.
 
 ```
 src/
@@ -69,6 +70,7 @@ src/
     types.py          # Pydantic models: PredictMatch, Metrics, DetectionMetrics
     ci.py             # Wilson confidence interval (foundation; types depends on it)
     evaluation.py     # Evaluation orchestrator class
+    calibration.py    # ConfidenceCalibrator: threshold selection (delegated by Evaluation)
     matching/         # box matching: geometry → assignment → records
       __init__.py     # re-exports: compute_iou_matrix, match_boxes, MatchingStrategy, assign_*
       iou.py          # IoU matrix computation
@@ -104,6 +106,7 @@ tests/
   test_evaluation.py
   test_nms.py
   test_confidence.py
+  test_confidence_calibrator.py # ConfidenceCalibrator: leak check, dispatch, warning, parity
   test_external_metrics.py     # dispatcher; ValueError path runs without extras
   test_ultralytics_metrics.py  # optional; skipped unless `ultralytics` is installed
   test_torchmetrics_metrics.py # optional; skipped unless `torchmetrics` is installed
