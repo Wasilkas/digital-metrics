@@ -181,6 +181,9 @@ It uses `_raw_preds_df` (unpreprocessed predictions) and runs its own inner matc
 loop for each IoU threshold, mirroring the Ultralytics two-path design:
 
 - Sort all predictions by confidence descending (globally per class).
+- Compute each image's pred↔GT IoU matrix once per class (`_precompute_image_matches`)
+  and reuse it across all ten thresholds — the IoU is threshold-independent, so this
+  avoids ~10x redundant IoU work (the assignment kernel still runs per threshold).
 - For each IoU threshold in `[0.50, 0.55, …, 0.95]` (10 values):
   - Match using the configured `strategy` (greedy, iou_prior, or hungarian).
   - Accumulate cumulative TP/FP → precision-recall curve.

@@ -20,6 +20,11 @@ APMethod = Literal["interp", "continuous"]
 # Per-class GT boxes keyed by image, used inside compute_map.
 _GtByImg = dict[str, npt.NDArray[np.float32]]
 
+# One image's matching inputs for a class: (global prediction indices, IoU matrix).
+# The IoU matrix is ``None`` when the image has no GT of this class, so every
+# prediction there is a false positive at any threshold.
+_ImageMatch = tuple[npt.NDArray[np.intp], npt.NDArray[np.float64] | None]
+
 
 def _resolve_split_images(
     gt_df: pd.DataFrame,
@@ -70,39 +75,57 @@ def compute_ap(
     return float(np.sum((mrec[idx + 1] - mrec[idx]) * mpre[idx + 1]))
 
 
-def _assign_tp_fp(
+def _precompute_image_matches(
     pred_boxes: npt.NDArray[np.float32],
     pred_img_ids: npt.NDArray[np.str_],
     gt_by_img: _GtByImg,
+) -> list[_ImageMatch]:
+    """Group a class's predictions by image and compute each image's IoU once.
+
+    The IoU matrix between an image's predictions and its GTs does not depend on
+    the IoU threshold, so computing it here (once per class) and reusing it across
+    all ten thresholds avoids ~10x redundant IoU work.  Predictions stay grouped
+    in their confidence-descending input order via their global indices, so the
+    cumulative P-R curve is traced correctly downstream.
+    """
+    img_to_pred_indices: dict[str, list[int]] = {}
+    for i, img_id in enumerate(pred_img_ids):
+        img_to_pred_indices.setdefault(str(img_id), []).append(i)
+
+    matches: list[_ImageMatch] = []
+    for img_id, pred_indices in img_to_pred_indices.items():
+        idx = np.asarray(pred_indices, dtype=np.intp)
+        gt_boxes = gt_by_img.get(img_id)
+        if gt_boxes is None or gt_boxes.size == 0:
+            matches.append((idx, None))
+        else:
+            matches.append((idx, compute_iou_matrix(pred_boxes[idx], gt_boxes)))
+    return matches
+
+
+def _assign_tp_fp(
+    image_matches: list[_ImageMatch],
+    n: int,
     thr: float,
     strategy: MatchingStrategy,
 ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
     """Per-class, per-image TP/FP assignment for the mAP precision-recall curve.
 
-    Predictions are grouped by image (input order is confidence-descending, so
-    each group preserves that order) and matched against that image's GTs using
-    the configured ``strategy`` kernel.  Labels need no checking — ``compute_map``
-    already works one class at a time.  A prediction matched to a GT is a TP,
-    everything else (including predictions on images with no GT of this class) is
-    an FP.  Results stay in the confidence-sorted global index order so the
-    cumulative P-R curve is traced correctly.
+    Runs the configured ``strategy`` kernel at IoU threshold ``thr`` over the
+    precomputed per-image IoU matrices (see :func:`_precompute_image_matches`).
+    Labels need no checking — ``compute_map`` already works one class at a time.
+    A prediction matched to a GT is a TP, everything else (including predictions
+    on images with no GT of this class) is an FP.  Results stay in the
+    confidence-sorted global index order so the cumulative P-R curve is correct.
     """
-    n = len(pred_boxes)
     tp = np.zeros(n, dtype=np.float32)
     fp = np.zeros(n, dtype=np.float32)
 
-    img_to_pred_indices: dict[str, list[int]] = {}
-    for i, img_id in enumerate(pred_img_ids):
-        img_to_pred_indices.setdefault(str(img_id), []).append(i)
-
-    for img_id, pred_indices in img_to_pred_indices.items():
-        gt_boxes = gt_by_img.get(img_id)
-        if gt_boxes is None or gt_boxes.size == 0:
-            for global_i in pred_indices:
-                fp[global_i] = 1.0
+    for idx, iou_matrix in image_matches:
+        if iou_matrix is None:
+            fp[idx] = 1.0
             continue
 
-        iou_matrix = compute_iou_matrix(pred_boxes[pred_indices], gt_boxes)
         if strategy == "hungarian":
             pairs = assign_hungarian(iou_matrix, thr)
         elif strategy == "iou_prior":
@@ -111,7 +134,7 @@ def _assign_tp_fp(
             pairs = assign_greedy(iou_matrix, thr)
 
         matched_local = {pred_i for pred_i, _ in pairs}
-        for local_i, global_i in enumerate(pred_indices):
+        for local_i, global_i in enumerate(idx):
             if local_i in matched_local:
                 tp[global_i] = 1.0
             else:
@@ -173,17 +196,21 @@ def compute_map(
             for img_id, idx in gt_c.groupby("image_name").indices.items()
         }
 
+        npos = npos_by_class.get(c, 0)
+        if npos == 0:
+            # No GT for this class → AP stays NaN at every threshold (pre-filled).
+            continue
+
         pred_c = pred_c.sort_values(by="confidence", ascending=False)
         pred_boxes = pred_c[[x1, y1, x2, y2]].values.astype(np.float32)
         pred_img_ids = pred_c["image_name"].values
 
-        for thr in _IOU_THRESHOLDS:
-            npos = npos_by_class.get(c, 0)
-            if npos == 0:
-                ap_per_class[c][thr] = float("nan")
-                continue
+        # Compute each image's IoU matrix once, then reuse it across all thresholds.
+        image_matches = _precompute_image_matches(pred_boxes, pred_img_ids, gt_by_img)
+        n_preds = len(pred_boxes)
 
-            tp, fp = _assign_tp_fp(pred_boxes, pred_img_ids, gt_by_img, thr, strategy)
+        for thr in _IOU_THRESHOLDS:
+            tp, fp = _assign_tp_fp(image_matches, n_preds, thr, strategy)
 
             tp_cum = np.cumsum(tp)
             fp_cum = np.cumsum(fp)
