@@ -44,6 +44,7 @@ GT_PATH = FIXTURES / "ground_truths_all.csv"
 PREDS_PATH = FIXTURES / "predicts_all.csv"
 
 SPLIT = "test"
+CAL_SPLIT = "val"
 IOU_THRESHOLD = 0.5
 
 
@@ -65,6 +66,25 @@ def run_external(
 ) -> None:
     """One full external-backend scoring pass."""
     compute_detection_metrics(test_gt, test_preds, backend=backend, classes=classes)
+
+
+def run_calibrated(backend: Backend | None, preds_df: pd.DataFrame, gt_df: pd.DataFrame) -> None:
+    """One full Evaluation pass through ``backend``: calibrate on val, report on test.
+
+    All three engines run via the same ``Evaluation`` entry point with per-class
+    confidence optimisation, so this is the apples-to-apples calibrated comparison
+    (native ``backend=None`` vs the two external backends).
+    """
+    ev = Evaluation(
+        preds_df=preds_df,
+        split_df=gt_df,
+        iou_threshold=IOU_THRESHOLD,
+        backend=backend,
+        matching_strategy="iou_prior",
+        ap_method="interp",
+        confidence_optimization="per_class",
+    )
+    ev(split=SPLIT, calibration_split=CAL_SPLIT)
 
 
 def time_way(fn: Callable[[], None], runs: int) -> tuple[float, float, float] | None:
@@ -114,6 +134,11 @@ def main() -> None:
     ap.add_argument("--runs", type=int, default=3, help="timed runs per way (after warmup)")
     ap.add_argument("--top", type=int, default=15, help="top N functions in cProfile output")
     ap.add_argument("--no-profile", action="store_true", help="wall-clock only, skip cProfile")
+    ap.add_argument(
+        "--calibrated",
+        action="store_true",
+        help="calibrate on val, report on test — all three engines via Evaluation",
+    )
     args = ap.parse_args()
 
     logger.info("Loading data...")
@@ -124,16 +149,30 @@ def main() -> None:
     test_images = set(test_gt["image_name"].unique())
     test_preds = preds_df[preds_df["image_name"].isin(test_images)]
     classes = sorted(gt_df["instance_label"].unique())
-    logger.info(
-        f"test: {test_gt['image_name'].nunique()} images, "
-        f"{len(test_gt)} GT boxes, {len(test_preds)} predictions; runs={args.runs}"
-    )
 
-    ways: dict[str, Callable[[], None]] = {
-        "ours": lambda: run_ours(preds_df, gt_df),
-        "ultralytics": lambda: run_external("ultralytics", test_gt, test_preds, classes),
-        "torchmetrics": lambda: run_external("torchmetrics", test_gt, test_preds, classes),
-    }
+    if args.calibrated:
+        cal_gt = gt_df[gt_df["split"] == CAL_SPLIT]
+        logger.info(
+            f"calibrated: calibrate on '{CAL_SPLIT}' "
+            f"({cal_gt['image_name'].nunique()} images, {len(cal_gt)} GT boxes) → "
+            f"report on '{SPLIT}' ({test_gt['image_name'].nunique()} images, "
+            f"{len(test_gt)} GT boxes); per-class; runs={args.runs}"
+        )
+        ways: dict[str, Callable[[], None]] = {
+            "ours": lambda: run_calibrated(None, preds_df, gt_df),
+            "ultralytics": lambda: run_calibrated("ultralytics", preds_df, gt_df),
+            "torchmetrics": lambda: run_calibrated("torchmetrics", preds_df, gt_df),
+        }
+    else:
+        logger.info(
+            f"self-select on test: {test_gt['image_name'].nunique()} images, "
+            f"{len(test_gt)} GT boxes, {len(test_preds)} predictions; runs={args.runs}"
+        )
+        ways = {
+            "ours": lambda: run_ours(preds_df, gt_df),
+            "ultralytics": lambda: run_external("ultralytics", test_gt, test_preds, classes),
+            "torchmetrics": lambda: run_external("torchmetrics", test_gt, test_preds, classes),
+        }
 
     logger.info("Wall-clock timing (warmup + timed runs)...")
     results: dict[str, tuple[float, float, float] | None] = {}
