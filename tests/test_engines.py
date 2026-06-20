@@ -90,25 +90,11 @@ def test_native_engine_matches_evaluation_metrics(
 # ---------------------------------------------------------------------------
 
 
-def test_backend_engine_resolve_calibration_split_warns_for_torchmetrics() -> None:
+@pytest.mark.parametrize("backend", ["ultralytics", "torchmetrics"])
+def test_backend_engine_resolve_calibration_split_keeps_split(backend: str) -> None:
+    # Both backends now honour a calibration split (no decline / no-op).
     engine = BackendEngine(
-        backend="torchmetrics",
-        classes=["a"],
-        confidence_optimization="per_class",
-        calibrator=ConfidenceCalibrator(
-            classes=["a"],
-            iou_threshold=0.5,
-            matching_strategy="greedy",
-            confidence_optimization="per_class",
-        ),
-    )
-    assert engine.resolve_calibration_split("val") is None  # declined → self-select
-    assert engine.resolve_calibration_split(None) is None
-
-
-def test_backend_engine_resolve_calibration_split_keeps_for_ultralytics() -> None:
-    engine = BackendEngine(
-        backend="ultralytics",
+        backend=backend,  # type: ignore[arg-type]
         classes=["a"],
         confidence_optimization="per_class",
         calibrator=ConfidenceCalibrator(
@@ -119,6 +105,7 @@ def test_backend_engine_resolve_calibration_split_keeps_for_ultralytics() -> Non
         ),
     )
     assert engine.resolve_calibration_split("val") == "val"
+    assert engine.resolve_calibration_split(None) is None
 
 
 # ---------------------------------------------------------------------------

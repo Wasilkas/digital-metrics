@@ -5,6 +5,7 @@ from .backends import (
     compute_torchmetrics_metrics,
     compute_ultralytics_confusion_matrix,
     compute_ultralytics_metrics,
+    find_torchmetrics_confidence,
     find_ultralytics_confidence,
 )
 from .config import InferenceConfig, PreprocessConfig, ScoringConfig
@@ -30,5 +31,6 @@ __all__ = [
     "compute_torchmetrics_metrics",
     "compute_ultralytics_confusion_matrix",
     "compute_ultralytics_metrics",
+    "find_torchmetrics_confidence",
     "find_ultralytics_confidence",
 ]

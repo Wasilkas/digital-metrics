@@ -325,15 +325,15 @@ coco = ev.compute_metrics_torchmetrics(split="test")
   `model.val()` does); `find_best_confs` and the preprocessing thresholds do not
   apply.
 - **Calibration** — by default a backend self-selects its operating point on the
-  eval split (in-sample). Pass `calibration_split="val"` and the `"ultralytics"`
-  backend instead reports P/R/F1 at the F1-optimal confidence found on `val`,
-  reading it off `ap_per_class`'s per-class curves; **AP stays over the full
-  curve** (still equals `model.val()`), and the chosen threshold(s) land on
-  `ev.best_confidences`. `confidence_optimization` selects `"per_class"` vs
-  `"global"` thresholds, exactly like the native path. `"torchmetrics"` ignores
-  `calibration_split` with a warning (not supported yet). The standalone helper
-  `find_ultralytics_confidence(gt_df, preds_df, mode=...)` and
-  `compute_ultralytics_metrics(..., conf_threshold=...)` expose the same mechanism.
+  eval split (in-sample). Pass `calibration_split="val"` and the backend instead
+  reports P/R/F1 at the F1-optimal confidence found on `val`, reading it off its
+  per-class curves; **AP stays over the full curve**, and the chosen threshold(s)
+  land on `ev.best_confidences`. `confidence_optimization` selects `"per_class"` vs
+  `"global"` thresholds, exactly like the native path. **Both backends support
+  this** — `"ultralytics"` reads off `ap_per_class`'s curves, `"torchmetrics"` off
+  its `extended_summary` IoU-0.50 precision/score curves. The standalone helpers
+  `find_ultralytics_confidence` / `find_torchmetrics_confidence` (with `mode=`) and
+  `compute_*_metrics(..., conf_threshold=...)` expose the same mechanism directly.
 
   ```python
   ev = Evaluation(preds_df, split_df, backend="ultralytics",

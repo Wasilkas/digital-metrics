@@ -10,8 +10,10 @@ from loguru import logger
 from ..backends import (
     Backend,
     compute_detection_metrics,
+    compute_torchmetrics_metrics,
     compute_ultralytics_confusion_matrix,
     compute_ultralytics_metrics,
+    find_torchmetrics_confidence,
     find_ultralytics_confidence,
 )
 from ..calibration import ConfidenceCalibrator
@@ -26,8 +28,9 @@ class BackendEngine:
 
     The raw backend output is kept as ``detection_metrics``; ``metrics`` holds the
     same numbers reconstructed onto :class:`Metrics` so the dashboards/CI plots keep
-    working. The ``"ultralytics"`` backend also fills the confusion matrix;
-    ``"torchmetrics"`` has none.
+    working. Both backends support calibration on a held-out split. The
+    ``"ultralytics"`` backend also fills the confusion matrix; ``"torchmetrics"``
+    has none.
     """
 
     def __init__(
@@ -44,14 +47,7 @@ class BackendEngine:
         self._calibrator = calibrator
 
     def resolve_calibration_split(self, calibration_split: str | None) -> str | None:
-        """Only ``"ultralytics"`` supports calibration; others self-select and warn."""
-        if calibration_split is not None and self._backend != "ultralytics":
-            logger.warning(
-                f"calibration_split={calibration_split!r} is not supported for "
-                f"backend={self._backend!r} yet; ignoring it (the backend self-selects "
-                "its operating point)."
-            )
-            return None
+        """Both backends honour a calibration split, so this is a no-op."""
         return calibration_split
 
     def run(self, inputs: ScoringInputs) -> EvaluationResult:
@@ -100,12 +96,13 @@ class BackendEngine:
     def _calibrate(
         self, inputs: ScoringInputs, split_image_names: list[str]
     ) -> tuple[dict[str, DetectionMetrics], dict[str, float]]:
-        """Ultralytics metrics with the operating point calibrated on a split.
+        """Backend metrics with the operating point calibrated on a split.
 
         Finds the F1-optimal confidence on ``calibration_split`` (per the configured
         ``confidence_optimization`` mode), then reads the eval split's P/R/F1 at that
         confidence while AP stays over the full curve, and returns the chosen
-        threshold(s) as ``best_confidences``.
+        threshold(s) as ``best_confidences``. Works for both backends — each reads
+        P/R/F1 off its own confidence curve.
         """
         assert inputs.calibration_split is not None
         gt_df = inputs.gt_df
@@ -118,7 +115,17 @@ class BackendEngine:
             f"Calibrating '{self._backend}' confidence on '{inputs.calibration_split}' "
             f"({len(cal_gt)} GT rows, mode={self._confidence_optimization})..."
         )
-        conf = find_ultralytics_confidence(
+        find_confidence = (
+            find_ultralytics_confidence
+            if self._backend == "ultralytics"
+            else find_torchmetrics_confidence
+        )
+        compute_metrics = (
+            compute_ultralytics_metrics
+            if self._backend == "ultralytics"
+            else compute_torchmetrics_metrics
+        )
+        conf = find_confidence(
             cal_gt,
             raw_preds_df,
             classes=self._classes,
@@ -130,7 +137,7 @@ class BackendEngine:
         else:
             best_confidences = {c: conf for c in self._classes}
 
-        detection_metrics = compute_ultralytics_metrics(
+        detection_metrics = compute_metrics(
             gt_df,
             raw_preds_df,
             classes=self._classes,
