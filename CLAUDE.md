@@ -84,8 +84,9 @@ src/
       kappa.py        # Cohen's kappa (pixel-mask method)
       confusion.py    # confusion matrix helpers (native, match-record based)
     preprocess/       # predictions preprocessing
-      __init__.py     # re-exports: filter_by_confidence, apply_nms
+      __init__.py     # re-exports: filter_by_confidence, apply_nms, PredictionPreprocessor
       nms.py          # confidence filter + custom NMS
+      preprocessor.py # PredictionPreprocessor: conf filter + NMS (delegated by Evaluation)
     reporting/        # output artifacts
       __init__.py     # re-exports: get_dashboards, plot_confidence_intervals
       dashboard.py    # Excel export + CI plots
@@ -105,6 +106,7 @@ tests/
   test_ci.py
   test_evaluation.py
   test_nms.py
+  test_preprocessor.py          # PredictionPreprocessor: enabled flag, conf/NMS, no-op, no-mutate
   test_confidence.py
   test_confidence_calibrator.py # ConfidenceCalibrator: leak check, dispatch, warning, parity
   test_external_metrics.py     # dispatcher; ValueError path runs without extras

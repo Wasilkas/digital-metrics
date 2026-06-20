@@ -26,7 +26,7 @@ from .matching import (
     find_duplicates_bboxes,
     match_boxes,
 )
-from .preprocess import apply_nms, filter_by_confidence
+from .preprocess import PredictionPreprocessor
 from .reporting import get_dashboards, plot_confidence_intervals
 from .scoring import (
     APMethod,
@@ -193,11 +193,11 @@ class Evaluation:
         self._best_confidences: dict[str, float] = {c: 0.0 for c in self.classes}
         self._skip_cohen_kappa = skip_cohen_kappa
         self.matching_strategy: MatchingStrategy = matching_strategy
-        self._preds_conf_threshold: float | None = preprocess_preds_conf_threshold
-        self._preds_nms_containment_threshold: float | None = (
-            preprocess_preds_nms_containment_threshold
+        self._preprocessor = PredictionPreprocessor(
+            conf_threshold=preprocess_preds_conf_threshold,
+            nms_containment_threshold=preprocess_preds_nms_containment_threshold,
+            nms_iou_threshold=preprocess_preds_nms_iou_threshold,
         )
-        self._preds_nms_iou_threshold: float | None = preprocess_preds_nms_iou_threshold
         self._ap_method: APMethod = ap_method
         self._confidence_optimization: ConfidenceOptimization = confidence_optimization
         self._backend: Backend | None = backend
@@ -218,12 +218,8 @@ class Evaluation:
 
         if preprocess:
             self._preprocess()
-        if (
-            preprocess_preds_conf_threshold is not None
-            or preprocess_preds_nms_containment_threshold is not None
-            or preprocess_preds_nms_iou_threshold is not None
-        ):
-            self._preprocess_preds()
+        if self._preprocessor.enabled:
+            self.preds_df = self._preprocessor.process(self.preds_df)
 
     def _validate_df(self, preds_df: pd.DataFrame, gt_df: pd.DataFrame) -> None:
         missing_gt = _REQUIRED_COLS_GT - set(gt_df.columns)
@@ -268,31 +264,6 @@ class Evaluation:
 
         self.split_df = self.split_df.drop(dups)
         logger.info(f"Preprocessing removed {initial_len - len(self.split_df)} duplicate GT rows.")
-
-    def _preprocess_preds(self) -> None:
-        """Apply confidence filtering and/or custom NMS to self.preds_df."""
-        if self._preds_conf_threshold is not None:
-            n_before = len(self.preds_df)
-            self.preds_df = filter_by_confidence(self.preds_df, self._preds_conf_threshold)
-            logger.info(
-                f"Predictions confidence filtering removed "
-                f"{n_before - len(self.preds_df)} rows "
-                f"(threshold={self._preds_conf_threshold})."
-            )
-
-        cont = self._preds_nms_containment_threshold
-        iou = self._preds_nms_iou_threshold
-        if cont is not None or iou is not None:
-            n_before = len(self.preds_df)
-            self.preds_df = apply_nms(
-                self.preds_df,
-                same_class_containment_threshold=cont if cont is not None else 1.01,
-                cross_class_iou_threshold=iou if iou is not None else 1.01,
-            )
-            logger.info(
-                f"Predictions NMS removed {n_before - len(self.preds_df)} rows "
-                f"(containment={cont}, iou={iou})."
-            )
 
     def predict_to_dataframe(
         self,
@@ -372,12 +343,8 @@ class Evaluation:
         self.preds_df = preds.reset_index(drop=True)
         self._raw_preds_df = self.preds_df.copy()
         self._has_predictions = True
-        if (
-            self._preds_conf_threshold is not None
-            or self._preds_nms_containment_threshold is not None
-            or self._preds_nms_iou_threshold is not None
-        ):
-            self._preprocess_preds()
+        if self._preprocessor.enabled:
+            self.preds_df = self._preprocessor.process(self.preds_df)
         return self.preds_df
 
     @property
