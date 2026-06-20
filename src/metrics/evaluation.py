@@ -18,6 +18,7 @@ from .backends import (
     compute_ultralytics_metrics,
     find_ultralytics_confidence,
 )
+from .calibration import ConfidenceCalibrator
 from .inference import ImageNameMode, predict_on_images
 from .matching import (
     MatchingStrategy,
@@ -32,8 +33,6 @@ from .scoring import (
     ConfidenceOptimization,
     compute_kappa,
     compute_map,
-    find_best_confidences,
-    find_best_global_confidence,
     get_confusion_matrix,
     get_confusions,
     slice_by_conf,
@@ -203,6 +202,12 @@ class Evaluation:
         self._confidence_optimization: ConfidenceOptimization = confidence_optimization
         self._backend: Backend | None = backend
         self._predict_kwargs: dict[str, Any] = predict_kwargs or {}
+        self._calibrator = ConfidenceCalibrator(
+            classes=self.classes,
+            iou_threshold=self.iou_threshold,
+            matching_strategy=self.matching_strategy,
+            confidence_optimization=self._confidence_optimization,
+        )
 
         self.metrics: dict[str, Metrics] = {}
         self.detection_metrics: dict[str, DetectionMetrics] = {}
@@ -473,10 +478,12 @@ class Evaluation:
         logger.info("Matching complete.")
 
         if calibration_split is not None:
-            self._best_confidences = self._calibrate(calibration_split)
+            self._best_confidences = self._calibrator.calibrate_native(
+                self.split_df, calibration_split, self.gt_df, self.preds_df
+            )
         elif find_best_confs:
             logger.info("Finding best confidence thresholds (in-sample)...")
-            self._best_confidences = self._find_confidences(self._matches)
+            self._best_confidences = self._calibrator.find_from_matches(self._matches)
             logger.info("Best thresholds found.")
 
         logger.info("Filtering by best confidence thresholds...")
@@ -623,44 +630,6 @@ class Evaluation:
             )
         return result
 
-    def _calibration_gt(self, calibration_split: str) -> pd.DataFrame:
-        """Return the validated ground truth for *calibration_split*.
-
-        Shared by the native and backend calibration paths. ``self.gt_df`` (the
-        evaluation split) must already be set, so leakage can be detected.
-
-        Raises:
-            ValueError: If split_df has no "split" column, the calibration split
-                has no rows, or it shares an ``image_name`` with the evaluation
-                split (which would leak calibration data into the evaluation).
-        """
-        if "split" not in self.split_df.columns:
-            raise ValueError(
-                f"calibration_split={calibration_split!r} requires split_df to have "
-                "a 'split' column, but none was found."
-            )
-        cal_gt = self.split_df[self.split_df["split"] == calibration_split]
-        if cal_gt.empty:
-            available = self.split_df["split"].unique().tolist()
-            raise ValueError(
-                f"No ground-truth rows found for calibration split {calibration_split!r}. "
-                f"Available splits: {available}"
-            )
-
-        assert self.gt_df is not None
-        overlap = set(cal_gt["image_name"]) & set(self.gt_df["image_name"])
-        if overlap:
-            sample = sorted(overlap)[:5]
-            raise ValueError(
-                f"Calibration split {calibration_split!r} shares "
-                f"{len(overlap)} image_name(s) with the evaluation split "
-                f"(e.g. {sample}). Predictions are matched to ground truth via "
-                "image_name, so overlapping images would leak calibration data "
-                "into the evaluation. Fix the 'split' labels in split_df so each "
-                "image_name belongs to exactly one split."
-            )
-        return cal_gt
-
     def _calibrate_backend(self, split: str, calibration_split: str) -> dict[str, DetectionMetrics]:
         """Ultralytics backend metrics with the operating point calibrated on val.
 
@@ -673,7 +642,9 @@ class Evaluation:
         self._define_gt(split)
         assert self.gt_df is not None
         self._validate_df(self._raw_preds_df, self.gt_df)
-        cal_gt = self._calibration_gt(calibration_split)
+        cal_gt = self._calibrator.validate_calibration_gt(
+            self.split_df, calibration_split, self.gt_df
+        )
 
         cal_image_names = cal_gt["image_name"].unique().tolist()
         logger.info(
@@ -700,92 +671,6 @@ class Evaluation:
             split_image_names=split_image_names,
             conf_threshold=conf,
         )
-
-    def _calibrate(self, calibration_split: str) -> dict[str, float]:
-        """Find per-class confidence thresholds on *calibration_split*.
-
-        Args:
-            calibration_split: Name of the split column value to calibrate on
-                (e.g. "val"). split_df must have a "split" column.
-
-        Returns:
-            Dict mapping class name → best confidence threshold.
-
-        Raises:
-            ValueError: If split_df has no "split" column, or if
-                calibration_split has no matching rows.
-        """
-        cal_gt = self._calibration_gt(calibration_split)
-        cal_image_names = cal_gt["image_name"].unique().tolist()
-        logger.info(
-            f"Calibrating confidence thresholds on '{calibration_split}' split "
-            f"({len(cal_gt)} GT rows)..."
-        )
-        cal_matches = match_boxes(
-            cal_gt,
-            self.preds_df,
-            self.iou_threshold,
-            strategy=self.matching_strategy,
-            split_image_names=cal_image_names,
-        )
-        thresholds = self._find_confidences(cal_matches)
-        logger.info("Threshold calibration complete.")
-        return thresholds
-
-    def _find_confidences(self, matches: dict[str, list[PredictMatch]]) -> dict[str, float]:
-        """Choose confidence thresholds per the configured optimisation mode.
-
-        ``"per_class"`` returns an independent threshold per class;
-        ``"global"`` returns the same YOLO-style threshold for every class.
-        """
-        if self._confidence_optimization == "global":
-            threshold = find_best_global_confidence(matches, self.classes)
-            thresholds = {c: threshold for c in self.classes}
-        else:
-            thresholds = find_best_confidences(matches, self.classes)
-        self._warn_if_thresholds_unoptimized(matches, thresholds)
-        return thresholds
-
-    def _warn_if_thresholds_unoptimized(
-        self, matches: dict[str, list[PredictMatch]], thresholds: dict[str, float]
-    ) -> None:
-        """Warn when an optimised threshold keeps every detection.
-
-        A threshold equal to the minimum prediction confidence does not discard
-        anything, so confidence optimisation had no effect — typically because the
-        predictions match the ground truth so well that the optimal cut is none
-        (e.g. identical pred/GT boxes, where the F1-optimal threshold is the floor).
-        """
-
-        def min_confidence(records: list[PredictMatch]) -> float | None:
-            confs = [m.confidence for m in records if m.type != "FN"]
-            return min(confs) if confs else None
-
-        if self._confidence_optimization == "global":
-            all_confs = [m.confidence for recs in matches.values() for m in recs if m.type != "FN"]
-            if not all_confs:
-                return
-            global_min = min(all_confs)
-            threshold = next(iter(thresholds.values()), 0.0)
-            if threshold <= global_min:
-                logger.warning(
-                    f"Global confidence threshold ({threshold:.6g}) equals the minimum "
-                    f"prediction confidence ({global_min:.6g}); it keeps every detection, "
-                    "so confidence optimisation had no effect (predictions may match GT "
-                    "closely)."
-                )
-            return
-
-        for c in self.classes:
-            mc = min_confidence(matches.get(c, []))
-            if mc is None:
-                continue
-            if thresholds.get(c, 0.0) <= mc:
-                logger.warning(
-                    f"Confidence threshold for class '{c}' ({thresholds[c]:.6g}) equals the "
-                    f"minimum prediction confidence ({mc:.6g}); it keeps every detection, so "
-                    "confidence optimisation had no effect for this class."
-                )
 
     def _compute_cohen_kappa(self) -> None:
         # Sentinel -1 for every class (including any absent from this split), so
