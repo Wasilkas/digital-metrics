@@ -519,6 +519,35 @@ lower-confidence box is removed when `IoU >= threshold`.
 
 Setting either NMS threshold to `None` disables that suppression type.
 
+### Grouped config objects (optional)
+
+If you'd rather not pass a dozen flat keyword arguments, the constructor also
+accepts three optional grouped configs. They are **purely additive** — every flat
+kwarg above still works unchanged — and each group, when passed, supplies that
+whole group and takes precedence over its corresponding flat kwargs:
+
+```python
+from metrics import Evaluation, ScoringConfig, PreprocessConfig, InferenceConfig
+
+ev = Evaluation(
+    preds_df,
+    split_df,
+    scoring=ScoringConfig(iou_threshold=0.5, matching_strategy="greedy"),
+    preprocessing=PreprocessConfig(conf_threshold=0.25, nms_iou_threshold=0.5),
+    inference=InferenceConfig(weights_path="best.pt", predict_kwargs={"imgsz": 1280}),
+)
+```
+
+- **`ScoringConfig`** — `iou_threshold`, `matching_strategy`, `ap_method`,
+  `confidence_optimization`, `skip_cohen_kappa`.
+- **`PreprocessConfig`** — `dedup_gt` (the flat `preprocess`), `conf_threshold`,
+  `nms_containment_threshold`, `nms_iou_threshold`.
+- **`InferenceConfig`** — `weights_path`, `predict_kwargs`.
+
+Each config's defaults mirror the flat-kwarg defaults, so `Evaluation(preds, split)`
+and `Evaluation(preds, split, scoring=ScoringConfig())` behave identically.
+`backend` stays a flat top-level argument.
+
 ---
 
 ## Development

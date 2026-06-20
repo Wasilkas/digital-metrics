@@ -595,6 +595,35 @@ ev(split="val")   # предсказывает из best.pt, затем оцен
   если задан `preds_df`. Для разового запуска те же аргументы можно передать прямо
   в [`predict_to_dataframe`](#от-весов-yolo-к-предсказаниям).
 
+### Группирующие конфиги (опционально)
+
+Чтобы не передавать десяток плоских аргументов, конструктор также принимает три
+опциональных группирующих конфига. Они **полностью аддитивны** — все плоские
+аргументы выше продолжают работать, — и каждая группа, если передана, задаёт
+целиком свою группу и имеет приоритет над соответствующими плоскими аргументами:
+
+```python
+from metrics import Evaluation, ScoringConfig, PreprocessConfig, InferenceConfig
+
+ev = Evaluation(
+    preds_df,
+    split_df,
+    scoring=ScoringConfig(iou_threshold=0.5, matching_strategy="greedy"),
+    preprocessing=PreprocessConfig(conf_threshold=0.25, nms_iou_threshold=0.5),
+    inference=InferenceConfig(weights_path="best.pt", predict_kwargs={"imgsz": 1280}),
+)
+```
+
+- **`ScoringConfig`** — `iou_threshold`, `matching_strategy`, `ap_method`,
+  `confidence_optimization`, `skip_cohen_kappa`.
+- **`PreprocessConfig`** — `dedup_gt` (плоский `preprocess`), `conf_threshold`,
+  `nms_containment_threshold`, `nms_iou_threshold`.
+- **`InferenceConfig`** — `weights_path`, `predict_kwargs`.
+
+Значения по умолчанию у конфигов совпадают с плоскими, поэтому
+`Evaluation(preds, split)` и `Evaluation(preds, split, scoring=ScoringConfig())`
+ведут себя одинаково. `backend` остаётся плоским аргументом верхнего уровня.
+
 ### Вызов `evaluation(...)`
 
 ```python

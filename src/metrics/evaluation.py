@@ -12,6 +12,7 @@ from matplotlib.figure import Figure
 
 from .backends import Backend, compute_detection_metrics
 from .calibration import ConfidenceCalibrator
+from .config import InferenceConfig, PreprocessConfig, ScoringConfig
 from .engines import BackendEngine, NativeEngine, ScoringEngine, ScoringInputs
 from .inference import ImageNameMode, predict_on_images
 from .matching import MatchingStrategy, compute_iou_matrix, find_duplicates_bboxes
@@ -42,6 +43,9 @@ class Evaluation:
         weights_path: str | None = None,
         backend: Backend | None = None,
         predict_kwargs: dict[str, Any] | None = None,
+        scoring: ScoringConfig | None = None,
+        preprocessing: PreprocessConfig | None = None,
+        inference: InferenceConfig | None = None,
     ) -> None:
         """Initialise the Evaluation object.
 
@@ -102,6 +106,17 @@ class Evaluation:
                 True, "augment": True}``). Ignored when ``preds_df`` is provided.
                 For one-off control you can instead call
                 :meth:`predict_to_dataframe` with the same keyword arguments.
+            scoring: Optional :class:`~metrics.config.ScoringConfig` grouping
+                ``iou_threshold`` / ``matching_strategy`` / ``ap_method`` /
+                ``confidence_optimization`` / ``skip_cohen_kappa``. When given it
+                takes precedence over those flat kwargs.
+            preprocessing: Optional :class:`~metrics.config.PreprocessConfig`
+                grouping the GT dedup flag (``dedup_gt`` ← ``preprocess``) and the
+                predictions conf/NMS thresholds. When given it takes precedence
+                over those flat kwargs.
+            inference: Optional :class:`~metrics.config.InferenceConfig` grouping
+                ``weights_path`` / ``predict_kwargs``. When given it takes
+                precedence over those flat kwargs.
         """
         self.suffix = "default"
 
@@ -110,14 +125,34 @@ class Evaluation:
         if isinstance(split_df, str):
             split_df = pd.read_csv(split_df)
 
-        self._weights_path = weights_path
+        # A grouped config, when provided, supplies its whole group and takes
+        # precedence over the corresponding flat kwargs (which set the defaults).
+        scoring = scoring or ScoringConfig(
+            iou_threshold=iou_threshold,
+            matching_strategy=matching_strategy,
+            ap_method=ap_method,
+            confidence_optimization=confidence_optimization,
+            skip_cohen_kappa=skip_cohen_kappa,
+        )
+        preprocessing = preprocessing or PreprocessConfig(
+            dedup_gt=preprocess,
+            conf_threshold=preprocess_preds_conf_threshold,
+            nms_containment_threshold=preprocess_preds_nms_containment_threshold,
+            nms_iou_threshold=preprocess_preds_nms_iou_threshold,
+        )
+        inference = inference or InferenceConfig(
+            weights_path=weights_path,
+            predict_kwargs=predict_kwargs,
+        )
+
+        self._weights_path = inference.weights_path
         self._has_predictions = preds_df is not None
-        if not self._has_predictions and weights_path is not None:
+        if not self._has_predictions and inference.weights_path is not None:
             logger.info(
                 f"No predictions provided; they will be generated from weights "
-                f"'{weights_path}' when the evaluation runs."
+                f"'{inference.weights_path}' when the evaluation runs."
             )
-        if self._has_predictions and weights_path is not None:
+        if self._has_predictions and inference.weights_path is not None:
             logger.warning(
                 "Both preds_df and weights_path were provided; using preds_df and "
                 "ignoring weights_path."
@@ -131,7 +166,7 @@ class Evaluation:
         self.split_df: pd.DataFrame = split_df.reset_index(drop=True)
         self.gt_df: pd.DataFrame | None = None
 
-        self.iou_threshold = iou_threshold
+        self.iou_threshold = scoring.iou_threshold
         # Defer KeyError: validate_dataframes raises ValueError with a clear message if missing.
         self.classes: list[str] = (
             self.split_df["instance_label"].unique().tolist()
@@ -139,17 +174,17 @@ class Evaluation:
             else []
         )
         self._best_confidences: dict[str, float] = {c: 0.0 for c in self.classes}
-        self._skip_cohen_kappa = skip_cohen_kappa
-        self.matching_strategy: MatchingStrategy = matching_strategy
+        self._skip_cohen_kappa = scoring.skip_cohen_kappa
+        self.matching_strategy: MatchingStrategy = scoring.matching_strategy
         self._preprocessor = PredictionPreprocessor(
-            conf_threshold=preprocess_preds_conf_threshold,
-            nms_containment_threshold=preprocess_preds_nms_containment_threshold,
-            nms_iou_threshold=preprocess_preds_nms_iou_threshold,
+            conf_threshold=preprocessing.conf_threshold,
+            nms_containment_threshold=preprocessing.nms_containment_threshold,
+            nms_iou_threshold=preprocessing.nms_iou_threshold,
         )
-        self._ap_method: APMethod = ap_method
-        self._confidence_optimization: ConfidenceOptimization = confidence_optimization
+        self._ap_method: APMethod = scoring.ap_method
+        self._confidence_optimization: ConfidenceOptimization = scoring.confidence_optimization
         self._backend: Backend | None = backend
-        self._predict_kwargs: dict[str, Any] = predict_kwargs or {}
+        self._predict_kwargs: dict[str, Any] = inference.predict_kwargs or {}
         self._calibrator = ConfidenceCalibrator(
             classes=self.classes,
             iou_threshold=self.iou_threshold,
@@ -181,7 +216,7 @@ class Evaluation:
         self._matches: dict[str, list[PredictMatch]] = {}
         self.unfiltered_matches: dict[str, list[PredictMatch]] = {}
 
-        if preprocess:
+        if preprocessing.dedup_gt:
             self._preprocess()
         if self._preprocessor.enabled:
             self.preds_df = self._preprocessor.process(self.preds_df)

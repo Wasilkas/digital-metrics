@@ -7,6 +7,7 @@ from .backends import (
     compute_ultralytics_metrics,
     find_ultralytics_confidence,
 )
+from .config import InferenceConfig, PreprocessConfig, ScoringConfig
 from .evaluation import Evaluation
 from .matching import MatchingStrategy
 from .scoring import APMethod, ConfidenceOptimization
@@ -18,9 +19,12 @@ __all__ = [
     "ConfidenceOptimization",
     "DetectionMetrics",
     "Evaluation",
+    "InferenceConfig",
     "MatchingStrategy",
     "Metrics",
     "PredictMatch",
+    "PreprocessConfig",
+    "ScoringConfig",
     "YoloMetrics",
     "compute_detection_metrics",
     "compute_torchmetrics_metrics",

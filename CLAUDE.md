@@ -71,6 +71,7 @@ src/
     types.py          # Pydantic models: PredictMatch, Metrics, DetectionMetrics
     ci.py             # Wilson confidence interval (foundation; types depends on it)
     validation.py     # validate_dataframes: shared GT/preds column + label checks
+    config.py         # ScoringConfig/PreprocessConfig/InferenceConfig (optional grouped Evaluation args)
     evaluation.py     # Evaluation orchestrator: data/IO + dispatch to a scoring engine
     calibration.py    # ConfidenceCalibrator: threshold selection (delegated by Evaluation)
     engines/          # pluggable scoring engines selected by Evaluation's backend
@@ -117,6 +118,7 @@ tests/
   test_confidence.py
   test_confidence_calibrator.py # ConfidenceCalibrator: leak check, dispatch, warning, parity
   test_engines.py               # NativeEngine/BackendEngine: run result, resolve split, selection
+  test_config.py                # grouped config objects: defaults, grouped==flat, precedence
   test_external_metrics.py     # dispatcher; ValueError path runs without extras
   test_ultralytics_metrics.py  # optional; skipped unless `ultralytics` is installed
   test_torchmetrics_metrics.py # optional; skipped unless `torchmetrics` is installed
@@ -423,7 +425,17 @@ All of the following must exist after any refactor:
   below). `predict_kwargs` (`dict | None`) is forwarded to Ultralytics'
   `model.predict` when predictions are auto-generated from `weights_path`
   (e.g. `{"conf": 0.25, "imgsz": 1280, "half": True}`); ignored when `preds_df` is
-  given
+  given. The constructor also accepts three optional **grouped config** objects —
+  `scoring` (`ScoringConfig`), `preprocessing` (`PreprocessConfig`), `inference`
+  (`InferenceConfig`) — as a tidier alternative to the flat kwargs above. They are
+  purely additive: every flat kwarg still works, and when a group is passed it
+  supplies that whole group and takes precedence over its corresponding flat kwargs
+  (defaults mirror the flat defaults). `backend` stays a flat top-level arg
+- `ScoringConfig` / `PreprocessConfig` / `InferenceConfig` exported from `metrics`
+  (defined in `config.py`) — `ScoringConfig(iou_threshold, matching_strategy,
+  ap_method, confidence_optimization, skip_cohen_kappa)`; `PreprocessConfig(dedup_gt,
+  conf_threshold, nms_containment_threshold, nms_iou_threshold)` (`dedup_gt` ← the
+  flat `preprocess`); `InferenceConfig(weights_path, predict_kwargs)`
 - `evaluation(split, find_best_confs, calibration_split)` — main call. When
   `preds_df` was `None`, the first run generates predictions from `weights_path`
   over just the splits it will use — the evaluation split plus `calibration_split`
