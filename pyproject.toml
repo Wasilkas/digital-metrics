@@ -54,6 +54,8 @@ addopts = "--import-mode=importlib"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Vendored Claude skill/plugin dirs (local artifacts, not project source).
+extend-exclude = [".agents", "agent", ".claude"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "FBT"]
@@ -62,8 +64,16 @@ select = ["E", "F", "I", "UP", "B", "FBT"]
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["scipy.*", "sklearn.*", "tqdm.*", "ultralytics.*", "torch.*", "torchmetrics.*"]
+module = ["scipy.*", "sklearn.*", "tqdm.*", "torch.*", "torchmetrics.*"]
 ignore_missing_imports = true
+
+# ultralytics ships no usable type information; once the extra is installed mypy
+# would otherwise read its source and flag re-exports (YOLO) and loosely-typed
+# tensor attributes. Skip following it — treat everything from it as untyped.
+[[tool.mypy.overrides]]
+module = ["ultralytics.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [dependency-groups]
 dev = [
