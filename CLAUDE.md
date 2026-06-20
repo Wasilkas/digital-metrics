@@ -71,6 +71,7 @@ src/
     types.py          # Pydantic models: PredictMatch, Metrics, DetectionMetrics
     ci.py             # Wilson confidence interval (foundation; types depends on it)
     validation.py     # validate_dataframes: shared GT/preds column + label checks
+    grouping.py       # image_row_indices: per-image positional row grouping (perf helper, shared)
     config.py         # ScoringConfig/PreprocessConfig/InferenceConfig (optional grouped Evaluation args)
     evaluation.py     # Evaluation orchestrator: data/IO + dispatch to a scoring engine
     calibration.py    # ConfidenceCalibrator: threshold selection (delegated by Evaluation)
@@ -80,13 +81,13 @@ src/
       native.py       # NativeEngine: match → calibrate → slice → metrics/mAP/kappa/CM
       backend.py      # BackendEngine: external library scoring + adapt onto native Metrics
     matching/         # box matching: geometry → assignment → records
-      __init__.py     # re-exports: compute_iou_matrix, match_boxes, MatchingStrategy, assign_*
+      __init__.py     # re-exports: compute_iou_matrix, find_duplicates_bboxes, match_boxes, MatchingStrategy, assign_*
       iou.py          # IoU matrix computation
       assignment.py   # pure box-assignment kernels (greedy/iou_prior/hungarian) on IoU matrices
       matching.py     # box matching → PredictMatch records; wraps assignment kernels
     scoring/          # metric computations from matches/boxes
       __init__.py     # re-exports: compute_map/compute_ap/APMethod, compute_kappa,
-                      #   find_best_*/ConfidenceOptimization, get_confusion_matrix/get_confusions
+                      #   find_best_*/slice_by_conf/ConfidenceOptimization, get_confusion_matrix/get_confusions
       ap.py           # AP / mAP computation; APMethod + MatchingStrategy options; reuses assignment kernels
       confidence.py   # best-confidence search: per-class + global (YOLO-style) thresholds
       kappa.py        # Cohen's kappa (pixel-mask method)
@@ -119,13 +120,16 @@ tests/
   test_confidence_calibrator.py # ConfidenceCalibrator: leak check, dispatch, warning, parity
   test_engines.py               # NativeEngine/BackendEngine: run result, resolve split, selection
   test_config.py                # grouped config objects: defaults, grouped==flat, precedence
+  test_dashboard.py            # get_dashboards / plot_confidence_intervals output
   test_external_metrics.py     # dispatcher; ValueError path runs without extras
+  test_evaluation_backend.py   # backend selection + DetectionMetrics→Metrics adapter + calibration
   test_ultralytics_metrics.py  # optional; skipped unless `ultralytics` is installed
   test_torchmetrics_metrics.py # optional; skipped unless `torchmetrics` is installed
   test_torchmetrics_calibration.py # torch-free curve helpers + optional when-installed calibration
   test_yolo_predict.py         # predict_to_dataframe: torch-free helpers, image_path/ImportError guards
 scripts/
   eval.py             # local evaluation script (see "Local Evaluation" section)
+  profile_backends.py # time + cProfile native vs ultralytics vs torchmetrics (--calibrated, --gt/--preds/--only)
 fixtures/
   ground_truths_all.csv     # GT data (val + test splits, 20 557 rows, 49 classes)
   predicts_all.csv          # model predictions (21 280 rows)
