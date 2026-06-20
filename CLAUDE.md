@@ -59,9 +59,10 @@ Modules are grouped into subpackages by role. Each subpackage's ``__init__.py``
 re-exports its public names, so internal and external code imports from the
 subpackage (e.g. ``from .scoring import compute_map``), and the top-level
 ``metrics/__init__.py`` keeps the public API flat (``from metrics import ...``).
-``types.py`` and ``ci.py`` stay at the top level as the shared foundation
-(``types`` depends on ``ci``), alongside the ``evaluation`` orchestrator and the
-``calibration`` collaborator it delegates confidence-threshold selection to.
+``types.py``, ``ci.py`` and ``validation.py`` stay at the top level as the shared
+foundation (``types`` depends on ``ci``), alongside the ``evaluation`` orchestrator,
+the ``calibration`` collaborator it delegates threshold selection to, and the
+``engines`` it dispatches scoring to (``NativeEngine`` / ``BackendEngine``).
 
 ```
 src/
@@ -69,8 +70,14 @@ src/
     __init__.py       # public API (re-exports from the subpackages below)
     types.py          # Pydantic models: PredictMatch, Metrics, DetectionMetrics
     ci.py             # Wilson confidence interval (foundation; types depends on it)
-    evaluation.py     # Evaluation orchestrator class
+    validation.py     # validate_dataframes: shared GT/preds column + label checks
+    evaluation.py     # Evaluation orchestrator: data/IO + dispatch to a scoring engine
     calibration.py    # ConfidenceCalibrator: threshold selection (delegated by Evaluation)
+    engines/          # pluggable scoring engines selected by Evaluation's backend
+      __init__.py     # re-exports: ScoringEngine, ScoringInputs, EvaluationResult, Native/BackendEngine
+      base.py         # ScoringEngine protocol + ScoringInputs/EvaluationResult dataclasses
+      native.py       # NativeEngine: match → calibrate → slice → metrics/mAP/kappa/CM
+      backend.py      # BackendEngine: external library scoring + adapt onto native Metrics
     matching/         # box matching: geometry → assignment → records
       __init__.py     # re-exports: compute_iou_matrix, match_boxes, MatchingStrategy, assign_*
       iou.py          # IoU matrix computation
@@ -109,6 +116,7 @@ tests/
   test_preprocessor.py          # PredictionPreprocessor: enabled flag, conf/NMS, no-op, no-mutate
   test_confidence.py
   test_confidence_calibrator.py # ConfidenceCalibrator: leak check, dispatch, warning, parity
+  test_engines.py               # NativeEngine/BackendEngine: run result, resolve split, selection
   test_external_metrics.py     # dispatcher; ValueError path runs without extras
   test_ultralytics_metrics.py  # optional; skipped unless `ultralytics` is installed
   test_torchmetrics_metrics.py # optional; skipped unless `torchmetrics` is installed
