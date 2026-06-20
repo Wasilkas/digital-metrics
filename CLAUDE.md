@@ -59,8 +59,10 @@ Modules are grouped into subpackages by role. Each subpackage's ``__init__.py``
 re-exports its public names, so internal and external code imports from the
 subpackage (e.g. ``from .scoring import compute_map``), and the top-level
 ``metrics/__init__.py`` keeps the public API flat (``from metrics import ...``).
-``types.py`` and ``ci.py`` stay at the top level as the shared foundation
-(``types`` depends on ``ci``), alongside the ``evaluation`` orchestrator.
+``types.py``, ``ci.py`` and ``validation.py`` stay at the top level as the shared
+foundation (``types`` depends on ``ci``), alongside the ``evaluation`` orchestrator,
+the ``calibration`` collaborator it delegates threshold selection to, and the
+``engines`` it dispatches scoring to (``NativeEngine`` / ``BackendEngine``).
 
 ```
 src/
@@ -68,30 +70,40 @@ src/
     __init__.py       # public API (re-exports from the subpackages below)
     types.py          # Pydantic models: PredictMatch, Metrics, DetectionMetrics
     ci.py             # Wilson confidence interval (foundation; types depends on it)
-    evaluation.py     # Evaluation orchestrator class
+    validation.py     # validate_dataframes: shared GT/preds column + label checks
+    grouping.py       # image_row_indices: per-image positional row grouping (perf helper, shared)
+    config.py         # ScoringConfig/PreprocessConfig/InferenceConfig (optional grouped Evaluation args)
+    evaluation.py     # Evaluation orchestrator: data/IO + dispatch to a scoring engine
+    calibration.py    # ConfidenceCalibrator: threshold selection (delegated by Evaluation)
+    engines/          # pluggable scoring engines selected by Evaluation's backend
+      __init__.py     # re-exports: ScoringEngine, ScoringInputs, EvaluationResult, Native/BackendEngine
+      base.py         # ScoringEngine protocol + ScoringInputs/EvaluationResult dataclasses
+      native.py       # NativeEngine: match → calibrate → slice → metrics/mAP/kappa/CM
+      backend.py      # BackendEngine: external library scoring + adapt onto native Metrics
     matching/         # box matching: geometry → assignment → records
-      __init__.py     # re-exports: compute_iou_matrix, match_boxes, MatchingStrategy, assign_*
+      __init__.py     # re-exports: compute_iou_matrix, find_duplicates_bboxes, match_boxes, MatchingStrategy, assign_*
       iou.py          # IoU matrix computation
       assignment.py   # pure box-assignment kernels (greedy/iou_prior/hungarian) on IoU matrices
       matching.py     # box matching → PredictMatch records; wraps assignment kernels
     scoring/          # metric computations from matches/boxes
       __init__.py     # re-exports: compute_map/compute_ap/APMethod, compute_kappa,
-                      #   find_best_*/ConfidenceOptimization, get_confusion_matrix/get_confusions
+                      #   find_best_*/slice_by_conf/ConfidenceOptimization, get_confusion_matrix/get_confusions
       ap.py           # AP / mAP computation; APMethod + MatchingStrategy options; reuses assignment kernels
       confidence.py   # best-confidence search: per-class + global (YOLO-style) thresholds
       kappa.py        # Cohen's kappa (pixel-mask method)
       confusion.py    # confusion matrix helpers (native, match-record based)
     preprocess/       # predictions preprocessing
-      __init__.py     # re-exports: filter_by_confidence, apply_nms
+      __init__.py     # re-exports: filter_by_confidence, apply_nms, PredictionPreprocessor
       nms.py          # confidence filter + custom NMS
+      preprocessor.py # PredictionPreprocessor: conf filter + NMS (delegated by Evaluation)
     reporting/        # output artifacts
       __init__.py     # re-exports: get_dashboards, plot_confidence_intervals
       dashboard.py    # Excel export + CI plots
     backends/         # optional, torch-backed metric backends (lazy torch import)
-      __init__.py     # re-exports: compute_detection_metrics/Backend, compute_ultralytics_*, compute_torchmetrics_metrics, YoloMetrics
+      __init__.py     # re-exports: compute_detection_metrics/Backend, compute_ultralytics_*/find_ultralytics_confidence, compute_torchmetrics_metrics/find_torchmetrics_confidence, YoloMetrics
       external.py     # single entry point: compute_detection_metrics(backend=...)
-      ultralytics_metrics.py  # optional YOLO-comparable metrics (ap_per_class) + confusion matrix
-      torchmetrics_metrics.py # optional COCO mAP via torchmetrics MeanAveragePrecision
+      ultralytics_metrics.py  # optional YOLO-comparable metrics (ap_per_class) + confusion matrix + calibration
+      torchmetrics_metrics.py # optional COCO mAP via torchmetrics MeanAveragePrecision + calibration
     inference/        # optional YOLO inference (lazy torch import)
       __init__.py     # re-exports: predict_on_images, ImageNameMode
       yolo_predict.py # YOLO inference helper (Evaluation.predict_to_dataframe)
@@ -103,13 +115,21 @@ tests/
   test_ci.py
   test_evaluation.py
   test_nms.py
+  test_preprocessor.py          # PredictionPreprocessor: enabled flag, conf/NMS, no-op, no-mutate
   test_confidence.py
+  test_confidence_calibrator.py # ConfidenceCalibrator: leak check, dispatch, warning, parity
+  test_engines.py               # NativeEngine/BackendEngine: run result, resolve split, selection
+  test_config.py                # grouped config objects: defaults, grouped==flat, precedence
+  test_dashboard.py            # get_dashboards / plot_confidence_intervals output
   test_external_metrics.py     # dispatcher; ValueError path runs without extras
+  test_evaluation_backend.py   # backend selection + DetectionMetrics→Metrics adapter + calibration
   test_ultralytics_metrics.py  # optional; skipped unless `ultralytics` is installed
   test_torchmetrics_metrics.py # optional; skipped unless `torchmetrics` is installed
+  test_torchmetrics_calibration.py # torch-free curve helpers + optional when-installed calibration
   test_yolo_predict.py         # predict_to_dataframe: torch-free helpers, image_path/ImportError guards
 scripts/
   eval.py             # local evaluation script (see "Local Evaluation" section)
+  profile_backends.py # time + cProfile native vs ultralytics vs torchmetrics (--calibrated, --gt/--preds/--only)
 fixtures/
   ground_truths_all.csv     # GT data (val + test splits, 20 557 rows, 49 classes)
   predicts_all.csv          # model predictions (21 280 rows)
@@ -165,6 +185,9 @@ It uses `_raw_preds_df` (unpreprocessed predictions) and runs its own inner matc
 loop for each IoU threshold, mirroring the Ultralytics two-path design:
 
 - Sort all predictions by confidence descending (globally per class).
+- Compute each image's pred↔GT IoU matrix once per class (`_precompute_image_matches`)
+  and reuse it across all ten thresholds — the IoU is threshold-independent, so this
+  avoids ~10x redundant IoU work (the assignment kernel still runs per threshold).
 - For each IoU threshold in `[0.50, 0.55, …, 0.95]` (10 values):
   - Match using the configured `strategy` (greedy, iou_prior, or hungarian).
   - Accumulate cumulative TP/FP → precision-recall curve.
@@ -234,12 +257,15 @@ adapts it onto native `Metrics` (reconstructing float TP/FP/FN from the per-clas
 GT count) so `get_dashboards` / `plot_confidence_intervals` work unchanged. By
 default a backend self-selects its operating point on the eval split;
 `find_best_confs` does not apply. Passing `calibration_split` enables proper
-"calibrate on val, report on test" for the `"ultralytics"` backend: the F1-optimal
-confidence is found on the calibration split (`find_ultralytics_confidence`, per
-`confidence_optimization` mode) and `compute_ultralytics_metrics(..., conf_threshold=)`
-reads the eval split's P/R/F1 at that confidence off the ap_per_class curves — AP
-stays over the full curve, and the chosen threshold(s) land on `best_confidences`.
-`"torchmetrics"` ignores `calibration_split` with a warning (not supported yet).
+"calibrate on val, report on test" for **both** backends: the F1-optimal
+confidence is found on the calibration split (`find_ultralytics_confidence` /
+`find_torchmetrics_confidence`, per `confidence_optimization` mode) and
+`compute_ultralytics_metrics(..., conf_threshold=)` /
+`compute_torchmetrics_metrics(..., conf_threshold=)` reads the eval split's P/R/F1
+at that confidence off the per-class curves — AP stays over the full curve, and the
+chosen threshold(s) land on `best_confidences`. (torchmetrics reads P/R/F1 off its
+IoU-0.50 precision curve, mapping confidence→operating-point via the
+`extended_summary` `scores` array.)
 The `"ultralytics"` backend also fills `cm` / `class_labels` via
 `compute_ultralytics_confusion_matrix` (Ultralytics' `ConfusionMatrix.process_batch`,
 ported; conf 0.25 / IoU 0.45, transposed to the sklearn row=GT/col=pred convention);
@@ -259,7 +285,10 @@ ported; conf 0.25 / IoU 0.45, transposed to the sklearn row=GT/col=pred conventi
   `MeanAveragePrecision` (pycocotools backend). AP is torchmetrics' own
   `map_50`/`map_75`/`map` per class. torchmetrics is AP-native with no headline
   P/R/F1, so we derive them the YOLO way: off its `extended_summary` IoU-0.50
-  101-point P-R curve at the per-class max-F1 recall point.
+  101-point P-R curve at the per-class max-F1 recall point. Calibration uses the
+  same summary's `scores` array (the confidence at each recall point) to read
+  P/R/F1 at an arbitrary confidence, so "calibrate on val, report on test" works
+  here too.
 
 `YoloMetrics` is kept as a backward-compatible alias of `DetectionMetrics` (same
 fields); `compute_ultralytics_metrics` still returns those objects.
@@ -410,7 +439,17 @@ All of the following must exist after any refactor:
   below). `predict_kwargs` (`dict | None`) is forwarded to Ultralytics'
   `model.predict` when predictions are auto-generated from `weights_path`
   (e.g. `{"conf": 0.25, "imgsz": 1280, "half": True}`); ignored when `preds_df` is
-  given
+  given. The constructor also accepts three optional **grouped config** objects —
+  `scoring` (`ScoringConfig`), `preprocessing` (`PreprocessConfig`), `inference`
+  (`InferenceConfig`) — as a tidier alternative to the flat kwargs above. They are
+  purely additive: every flat kwarg still works, and when a group is passed it
+  supplies that whole group and takes precedence over its corresponding flat kwargs
+  (defaults mirror the flat defaults). `backend` stays a flat top-level arg
+- `ScoringConfig` / `PreprocessConfig` / `InferenceConfig` exported from `metrics`
+  (defined in `config.py`) — `ScoringConfig(iou_threshold, matching_strategy,
+  ap_method, confidence_optimization, skip_cohen_kappa)`; `PreprocessConfig(dedup_gt,
+  conf_threshold, nms_containment_threshold, nms_iou_threshold)` (`dedup_gt` ← the
+  flat `preprocess`); `InferenceConfig(weights_path, predict_kwargs)`
 - `evaluation(split, find_best_confs, calibration_split)` — main call. When
   `preds_df` was `None`, the first run generates predictions from `weights_path`
   over just the splits it will use — the evaluation split plus `calibration_split`
@@ -500,7 +539,16 @@ All of the following must exist after any refactor:
   `ConfusionMatrix.process_batch`; returns `(matrix, labels)` with shape
   `(nc+1, nc+1)` in sklearn row=GT/col=pred orientation; requires the
   `ultralytics` extra (lazy import, raises `ImportError` with an install hint)
-- `compute_torchmetrics_metrics(gt_df, preds_df, classes, split_image_names)`
-  exported from `metrics` — optional general COCO mAP via torchmetrics'
-  `MeanAveragePrecision`; requires the `torchmetrics` extra (lazy import, raises
-  `ImportError` with an install hint when missing)
+- `compute_torchmetrics_metrics(gt_df, preds_df, classes, split_image_names,
+  conf_threshold)` exported from `metrics` — optional general COCO mAP via
+  torchmetrics' `MeanAveragePrecision`. `conf_threshold` (`None` | `float` |
+  `dict[str, float]`) reads P/R/F1 off the per-class IoU-0.50 curve at a given
+  confidence (mapped via the `extended_summary` `scores` array) instead of the
+  in-sample max-F1 point; AP is always over the full curve. Requires the
+  `torchmetrics` extra (lazy import, raises `ImportError` with an install hint;
+  raises `ValueError` if `conf_threshold` is set but no `scores` array is returned)
+- `find_torchmetrics_confidence(gt_df, preds_df, classes, split_image_names, mode)`
+  exported from `metrics` — torchmetrics calibration helper mirroring
+  `find_ultralytics_confidence`: F1-optimal confidence from its IoU-0.50 curve.
+  `mode="global"` returns a `float`, `"per_class"` a `dict[str, float]`; pair with
+  `compute_torchmetrics_metrics(conf_threshold=...)`. Requires the `torchmetrics` extra

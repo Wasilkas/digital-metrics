@@ -92,7 +92,9 @@ def main() -> None:
     total_tp = sum(m.tp for m in ev.metrics.values())
     total_fp = sum(m.fp for m in ev.metrics.values())
     total_fn = sum(m.fn for m in ev.metrics.values())
-    print(f"totals:  TP={total_tp:.0f}  FP={total_fp:.0f}  FN={total_fn:.0f}  (GT rows={len(gt_df)})")
+    print(
+        f"totals:  TP={total_tp:.0f}  FP={total_fp:.0f}  FN={total_fn:.0f}  (GT rows={len(gt_df)})"
+    )
 
     if imperfect:
         print(f"\n[FAIL] {len(imperfect)} class(es) did not score a perfect 1.0:")

@@ -103,10 +103,24 @@ def plot_means(means: dict[str, np.ndarray]) -> Path:
 
     # Visually split the operating-point-dependent group from the curve-area group.
     ax.axvline(2.5, color="grey", ls=":", lw=1)
-    ax.text(1.0, 1.02, "single operating point\n(differs by path)", ha="center",
-            va="bottom", fontsize=9, color="dimgray")
-    ax.text(3.5, 1.02, "area under the curve\n(path-invariant)", ha="center",
-            va="bottom", fontsize=9, color="dimgray")
+    ax.text(
+        1.0,
+        1.02,
+        "single operating point\n(differs by path)",
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="dimgray",
+    )
+    ax.text(
+        3.5,
+        1.02,
+        "area under the curve\n(path-invariant)",
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="dimgray",
+    )
 
     ax.set_xticks(x)
     ax.set_xticklabels(BAR_LABELS)
@@ -198,10 +212,17 @@ def plot_pr_curve(
         if not np.isnan(pp[idx]):
             ax.text(0.975, pp[idx], f"F1={f}", color="grey", fontsize=8, va="center")
 
-    ax.step(recall, precision, where="post", color="#4C72B0", lw=1.6,
-            label="raw P-R curve (realizable)")
-    ax.plot(recall, envelope, color="#C44E52", lw=1.4, ls="-",
-            label="COCO precision envelope (area = AP)")
+    ax.step(
+        recall, precision, where="post", color="#4C72B0", lw=1.6, label="raw P-R curve (realizable)"
+    )
+    ax.plot(
+        recall,
+        envelope,
+        color="#C44E52",
+        lw=1.4,
+        ls="-",
+        label="COCO precision envelope (area = AP)",
+    )
     ax.fill_between(recall, envelope, step=None, alpha=0.06, color="#C44E52")
 
     def _lab(name: str, p: float, r: float) -> str:
@@ -209,19 +230,46 @@ def plot_pr_curve(
 
     # Per-class max-F1 — where ours (raw) and torchmetrics (envelope) both sit;
     # they nearly coincide, so the raw↔envelope readout is only a hair apart.
-    ax.scatter([recall[kp]], [precision[kp]], s=110, color="#4C72B0", zorder=6,
-               edgecolor="white", label=_lab("ours — per-class max-F1 (raw)",
-                                              precision[kp], recall[kp]))
-    ax.scatter([recall[j]], [envelope[j]], s=80, color="#C44E52", zorder=6, marker="D",
-               edgecolor="white", label=_lab("torchmetrics — per-class max-F1 (envelope)",
-                                             envelope[j], recall[j]))
+    ax.scatter(
+        [recall[kp]],
+        [precision[kp]],
+        s=110,
+        color="#4C72B0",
+        zorder=6,
+        edgecolor="white",
+        label=_lab("ours — per-class max-F1 (raw)", precision[kp], recall[kp]),
+    )
+    ax.scatter(
+        [recall[j]],
+        [envelope[j]],
+        s=80,
+        color="#C44E52",
+        zorder=6,
+        marker="D",
+        edgecolor="white",
+        label=_lab("torchmetrics — per-class max-F1 (envelope)", envelope[j], recall[j]),
+    )
     # Single global threshold — where ultralytics (and ours-global) put this class.
-    ax.scatter([recall[kg]], [precision[kg]], s=110, color="#DD8452", zorder=6, marker="s",
-               edgecolor="white", label=_lab(f"single global thr {global_thr:.3f} "
-                                             "(ultralytics / ours-global)",
-                                             precision[kg], recall[kg]))
-    ax.annotate("", xy=(recall[kp], precision[kp]), xytext=(recall[kg], precision[kg]),
-                arrowprops={"arrowstyle": "->", "color": "grey", "lw": 1.2})
+    ax.scatter(
+        [recall[kg]],
+        [precision[kg]],
+        s=110,
+        color="#DD8452",
+        zorder=6,
+        marker="s",
+        edgecolor="white",
+        label=_lab(
+            f"single global thr {global_thr:.3f} (ultralytics / ours-global)",
+            precision[kg],
+            recall[kg],
+        ),
+    )
+    ax.annotate(
+        "",
+        xy=(recall[kp], precision[kp]),
+        xytext=(recall[kg], precision[kg]),
+        arrowprops={"arrowstyle": "->", "color": "grey", "lw": 1.2},
+    )
 
     ap50 = ev.metrics[cls].ap50
     ax.set_xlim(0, 1.04)

@@ -9,12 +9,22 @@ from metrics.preprocess import apply_nms, filter_by_confidence
 # ---------------------------------------------------------------------------
 
 _GT_COLS = [
-    "image_name", "instance_label",
-    "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "split",
+    "image_name",
+    "instance_label",
+    "bbox_x_tl",
+    "bbox_y_tl",
+    "bbox_x_br",
+    "bbox_y_br",
+    "split",
 ]
 _PRED_COLS = [
-    "image_name", "instance_label",
-    "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "confidence",
+    "image_name",
+    "instance_label",
+    "bbox_x_tl",
+    "bbox_y_tl",
+    "bbox_x_br",
+    "bbox_y_br",
+    "confidence",
 ]
 
 
@@ -29,6 +39,7 @@ def _gt(*rows: tuple) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # filter_by_confidence
 # ---------------------------------------------------------------------------
+
 
 def test_filter_by_confidence_removes_below_threshold() -> None:
     df = _preds(
@@ -62,6 +73,7 @@ def test_filter_by_confidence_removes_all_when_threshold_above_max() -> None:
 # ---------------------------------------------------------------------------
 # apply_nms — same-class containment
 # ---------------------------------------------------------------------------
+
 
 def test_nms_same_class_small_inside_large_is_suppressed() -> None:
     """Small box fully inside a large same-class box → small one suppressed."""
@@ -116,11 +128,12 @@ def test_nms_same_class_higher_confidence_wins() -> None:
 # apply_nms — cross-class IoU
 # ---------------------------------------------------------------------------
 
+
 def test_nms_cross_class_high_iou_lower_confidence_suppressed() -> None:
     """Two different-class boxes with IoU > threshold → lower confidence dropped."""
     df = _preds(
-        ("img1", "cat",  0, 0, 100, 100, 0.9),
-        ("img1", "dog",  5, 5, 105, 105, 0.7),  # high overlap, lower conf
+        ("img1", "cat", 0, 0, 100, 100, 0.9),
+        ("img1", "dog", 5, 5, 105, 105, 0.7),  # high overlap, lower conf
     )
     result = apply_nms(df, same_class_containment_threshold=1.01, cross_class_iou_threshold=0.5)
     assert len(result) == 1
@@ -130,7 +143,7 @@ def test_nms_cross_class_high_iou_lower_confidence_suppressed() -> None:
 def test_nms_cross_class_low_iou_both_kept() -> None:
     """Two different-class boxes with IoU below threshold → both kept."""
     df = _preds(
-        ("img1", "cat", 0,  0,  100, 100, 0.9),
+        ("img1", "cat", 0, 0, 100, 100, 0.9),
         ("img1", "dog", 80, 80, 180, 180, 0.7),  # small overlap
     )
     # IoU = 20*20 / (100*100 + 100*100 - 20*20) = 400/19600 ≈ 0.02
@@ -152,20 +165,21 @@ def test_nms_cross_class_no_suppression_when_threshold_above_one() -> None:
 # apply_nms — multi-image isolation
 # ---------------------------------------------------------------------------
 
+
 def test_nms_suppression_is_per_image() -> None:
     """A box that would be suppressed on img1 is kept on img2 independently."""
     df = _preds(
         # img1: two same-class boxes — small inside large
-        ("img1", "cat", 0,  0,  100, 100, 0.9),
-        ("img1", "cat", 10, 10, 50,  50,  0.7),
+        ("img1", "cat", 0, 0, 100, 100, 0.9),
+        ("img1", "cat", 10, 10, 50, 50, 0.7),
         # img2: same geometry but no second box — both should survive independently
-        ("img2", "cat", 0,  0,  100, 100, 0.9),
+        ("img2", "cat", 0, 0, 100, 100, 0.9),
     )
     result = apply_nms(df, same_class_containment_threshold=0.8, cross_class_iou_threshold=1.01)
     img1_result = result[result["image_name"] == "img1"]
     img2_result = result[result["image_name"] == "img2"]
-    assert len(img1_result) == 1   # inner box suppressed
-    assert len(img2_result) == 1   # nothing to suppress
+    assert len(img1_result) == 1  # inner box suppressed
+    assert len(img2_result) == 1  # nothing to suppress
 
 
 def test_nms_empty_image_no_predictions_ok() -> None:
@@ -180,16 +194,17 @@ def test_nms_empty_image_no_predictions_ok() -> None:
 # Evaluation integration
 # ---------------------------------------------------------------------------
 
+
 def _make_eval_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     gt = _gt(
         ("img1", "cat", 0, 0, 100, 100, "test"),
         ("img1", "dog", 200, 200, 300, 300, "test"),
     )
     preds = _preds(
-        ("img1", "cat",  0, 0, 100, 100, 0.9),   # TP
-        ("img1", "cat",  5, 5,  90,  90, 0.7),   # inside first cat box → should be NMS'd
-        ("img1", "dog", 200, 200, 300, 300, 0.8), # TP
-        ("img1", "cat",  0, 0, 100, 100, 0.1),   # below conf threshold
+        ("img1", "cat", 0, 0, 100, 100, 0.9),  # TP
+        ("img1", "cat", 5, 5, 90, 90, 0.7),  # inside first cat box → should be NMS'd
+        ("img1", "dog", 200, 200, 300, 300, 0.8),  # TP
+        ("img1", "cat", 0, 0, 100, 100, 0.1),  # below conf threshold
     )
     return gt, preds
 

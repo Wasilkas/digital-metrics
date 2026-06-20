@@ -55,7 +55,10 @@ def f(iou_threshold: float, save_path: str) -> None:
 
     n_corrupted = int((preds_df["confidence"] < 0.5).sum())
     print(f"\n{'#' * 72}")
-    print(f"# iou_threshold={iou_threshold}  (corrupted {n_corrupted}/{len(preds_df)} preds → 'Кромка')")
+    print(
+        f"# iou_threshold={iou_threshold}  "
+        f"(corrupted {n_corrupted}/{len(preds_df)} preds → 'Кромка')"
+    )
     print("#" * 72)
 
     ev = Evaluation(preds_df, split_df, iou_threshold=iou_threshold)
@@ -79,9 +82,7 @@ def f(iou_threshold: float, save_path: str) -> None:
     mean_r = float(np.mean([m.recall for m in ev.metrics.values()]))
     mean_f1 = float(np.mean([m.f1_score for m in ev.metrics.values()]))
     mean_ap50 = float(np.nanmean([m.ap50 for m in ev.metrics.values()]))
-    print(
-        f"MEAN  P={mean_p:.3f}  R={mean_r:.3f}  F1={mean_f1:.3f}  mAP50={mean_ap50:.3f}"
-    )
+    print(f"MEAN  P={mean_p:.3f}  R={mean_r:.3f}  F1={mean_f1:.3f}  mAP50={mean_ap50:.3f}")
 
     # Export dashboards (Excel + CI plots + confusion matrix) under fixtures/sanity.
     out_dir = SANITY_DIR / save_path

@@ -88,8 +88,7 @@ def compute_external(
     """Score with one external backend via the single entry point."""
     res = compute_detection_metrics(test_gt, test_preds, backend=backend, classes=classes)
     return {
-        c: Scores(m.precision, m.recall, m.f1, m.ap50, m.ap75, m.ap50_95)
-        for c, m in res.items()
+        c: Scores(m.precision, m.recall, m.f1, m.ap50, m.ap75, m.ap50_95) for c, m in res.items()
     }
 
 

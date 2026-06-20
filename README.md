@@ -325,15 +325,15 @@ coco = ev.compute_metrics_torchmetrics(split="test")
   `model.val()` does); `find_best_confs` and the preprocessing thresholds do not
   apply.
 - **Calibration** — by default a backend self-selects its operating point on the
-  eval split (in-sample). Pass `calibration_split="val"` and the `"ultralytics"`
-  backend instead reports P/R/F1 at the F1-optimal confidence found on `val`,
-  reading it off `ap_per_class`'s per-class curves; **AP stays over the full
-  curve** (still equals `model.val()`), and the chosen threshold(s) land on
-  `ev.best_confidences`. `confidence_optimization` selects `"per_class"` vs
-  `"global"` thresholds, exactly like the native path. `"torchmetrics"` ignores
-  `calibration_split` with a warning (not supported yet). The standalone helper
-  `find_ultralytics_confidence(gt_df, preds_df, mode=...)` and
-  `compute_ultralytics_metrics(..., conf_threshold=...)` expose the same mechanism.
+  eval split (in-sample). Pass `calibration_split="val"` and the backend instead
+  reports P/R/F1 at the F1-optimal confidence found on `val`, reading it off its
+  per-class curves; **AP stays over the full curve**, and the chosen threshold(s)
+  land on `ev.best_confidences`. `confidence_optimization` selects `"per_class"` vs
+  `"global"` thresholds, exactly like the native path. **Both backends support
+  this** — `"ultralytics"` reads off `ap_per_class`'s curves, `"torchmetrics"` off
+  its `extended_summary` IoU-0.50 precision/score curves. The standalone helpers
+  `find_ultralytics_confidence` / `find_torchmetrics_confidence` (with `mode=`) and
+  `compute_*_metrics(..., conf_threshold=...)` expose the same mechanism directly.
 
   ```python
   ev = Evaluation(preds_df, split_df, backend="ultralytics",
@@ -518,6 +518,35 @@ suppression: the lower-confidence box is removed when
 lower-confidence box is removed when `IoU >= threshold`.
 
 Setting either NMS threshold to `None` disables that suppression type.
+
+### Grouped config objects (optional)
+
+If you'd rather not pass a dozen flat keyword arguments, the constructor also
+accepts three optional grouped configs. They are **purely additive** — every flat
+kwarg above still works unchanged — and each group, when passed, supplies that
+whole group and takes precedence over its corresponding flat kwargs:
+
+```python
+from metrics import Evaluation, ScoringConfig, PreprocessConfig, InferenceConfig
+
+ev = Evaluation(
+    preds_df,
+    split_df,
+    scoring=ScoringConfig(iou_threshold=0.5, matching_strategy="greedy"),
+    preprocessing=PreprocessConfig(conf_threshold=0.25, nms_iou_threshold=0.5),
+    inference=InferenceConfig(weights_path="best.pt", predict_kwargs={"imgsz": 1280}),
+)
+```
+
+- **`ScoringConfig`** — `iou_threshold`, `matching_strategy`, `ap_method`,
+  `confidence_optimization`, `skip_cohen_kappa`.
+- **`PreprocessConfig`** — `dedup_gt` (the flat `preprocess`), `conf_threshold`,
+  `nms_containment_threshold`, `nms_iou_threshold`.
+- **`InferenceConfig`** — `weights_path`, `predict_kwargs`.
+
+Each config's defaults mirror the flat-kwarg defaults, so `Evaluation(preds, split)`
+and `Evaluation(preds, split, scoring=ScoringConfig())` behave identically.
+`backend` stays a flat top-level argument.
 
 ---
 

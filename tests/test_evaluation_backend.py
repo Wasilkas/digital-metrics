@@ -12,17 +12,29 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from metrics import DetectionMetrics, Evaluation
+from metrics import DetectionMetrics, Evaluation, Metrics
 from metrics.backends.ultralytics_metrics import (
     _conf_at_max_f1,
     _confusion_process_batch,
     _read_prf1_at_conf,
     compute_ultralytics_confusion_matrix,
 )
+from metrics.engines import BackendEngine
 
 
 def _f1(p: float, r: float) -> float:
     return 2.0 * p * r / (p + r)
+
+
+def _adapt_via_engine(ev: Evaluation, det: dict[str, DetectionMetrics]) -> dict[str, Metrics]:
+    """Run the (torch-free) DetectionMetrics→Metrics adapter via a BackendEngine."""
+    engine = BackendEngine(
+        backend="ultralytics",
+        classes=ev.classes,
+        confidence_optimization="per_class",
+        calibrator=ev._calibrator,
+    )
+    return engine._adapt(det, ev.gt_df)
 
 
 def test_confusion_process_batch_counts_tp_fp_fn() -> None:
@@ -75,7 +87,7 @@ def test_adapt_detection_metrics_reproduces_backend_numbers(
         # class_c deliberately omitted → exercises the "missing/absent" branch.
     }
 
-    adapted = ev._adapt_detection_metrics(det)
+    adapted = _adapt_via_engine(ev, det)
 
     # precision/recall/f1/AP reproduce the backend exactly.
     a = adapted["class_a"]
@@ -106,13 +118,14 @@ def test_backend_metrics_drive_dashboards_without_cm(
     gt_df, preds_df = tiny_dataset
     ev = Evaluation(preds_df, gt_df)
     ev._define_gt("all")
-    ev.metrics = ev._adapt_detection_metrics(
+    ev.metrics = _adapt_via_engine(
+        ev,
         {
             c: DetectionMetrics(
                 precision=0.8, recall=0.6, f1=_f1(0.8, 0.6), ap50=0.7, ap75=0.5, ap50_95=0.55
             )
             for c in ev.classes
-        }
+        },
     )
     ev.cm = None  # native-only; cleared in backend mode
 

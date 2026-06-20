@@ -99,9 +99,7 @@ def ultralytics_ap(
         conf = p["confidence"].to_numpy(np.float32)
 
         iou = box_iou(gt_boxes, pred_boxes)  # (n_gt, n_pred)
-        correct = match_predictions(
-            torch.tensor(pred_cls), torch.tensor(gt_cls), iou
-        )
+        correct = match_predictions(torch.tensor(pred_cls), torch.tensor(gt_cls), iou)
         tp_all.append(correct)
         conf_all.append(conf)
         pred_cls_all.append(pred_cls)
@@ -172,16 +170,15 @@ def main() -> None:
     print(f"{'CLASS':<28} {'OURS':>8} {'ULTRA':>8} {'DIFF':>9}")
     print("=" * 64)
     for r in rows:
-        print(
-            f"{r['class']:<28} {r['ours_ap50']:>8.4f} "
-            f"{r['ult_ap50']:>8.4f} {r['diff']:>+9.5f}"
-        )
+        print(f"{r['class']:<28} {r['ours_ap50']:>8.4f} {r['ult_ap50']:>8.4f} {r['diff']:>+9.5f}")
     print("=" * 64)
 
     diffs = np.array([r["diff"] for r in rows])
     print(f"\nclasses compared: {len(rows)}")
-    print(f"per-class AP50  max|diff|={np.abs(diffs).max():.5f}  "
-          f"mean|diff|={np.abs(diffs).mean():.5f}")
+    print(
+        f"per-class AP50  max|diff|={np.abs(diffs).max():.5f}  "
+        f"mean|diff|={np.abs(diffs).mean():.5f}"
+    )
 
     print(
         f"\nmAP50      ours={np.mean(list(ours_ap50.values())):.4f}  "
