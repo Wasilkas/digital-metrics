@@ -139,11 +139,19 @@ def main() -> None:
         action="store_true",
         help="calibrate on val, report on test — all three engines via Evaluation",
     )
+    ap.add_argument("--gt", type=Path, default=GT_PATH, help="ground-truth CSV path")
+    ap.add_argument("--preds", type=Path, default=PREDS_PATH, help="predictions CSV path")
+    ap.add_argument(
+        "--only",
+        type=str,
+        default=None,
+        help="comma-separated subset of ways to run (e.g. 'ours' or 'ours,ultralytics')",
+    )
     args = ap.parse_args()
 
-    logger.info("Loading data...")
-    gt_df = pd.read_csv(GT_PATH, index_col=0)
-    preds_df = pd.read_csv(PREDS_PATH, index_col=0)
+    logger.info(f"Loading data ({args.gt.name}, {args.preds.name})...")
+    gt_df = pd.read_csv(args.gt, index_col=0)
+    preds_df = pd.read_csv(args.preds, index_col=0)
 
     test_gt = gt_df[gt_df["split"] == SPLIT]
     test_images = set(test_gt["image_name"].unique())
@@ -173,6 +181,12 @@ def main() -> None:
             "ultralytics": lambda: run_external("ultralytics", test_gt, test_preds, classes),
             "torchmetrics": lambda: run_external("torchmetrics", test_gt, test_preds, classes),
         }
+
+    if args.only:
+        wanted = {w.strip() for w in args.only.split(",")}
+        ways = {name: fn for name, fn in ways.items() if name in wanted}
+        if not ways:
+            ap.error(f"--only={args.only!r} matched no ways (ours, ultralytics, torchmetrics)")
 
     logger.info("Wall-clock timing (warmup + timed runs)...")
     results: dict[str, tuple[float, float, float] | None] = {}
