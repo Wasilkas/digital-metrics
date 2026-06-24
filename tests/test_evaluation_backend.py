@@ -37,6 +37,22 @@ def _adapt_via_engine(ev: Evaluation, det: dict[str, DetectionMetrics]) -> dict[
     return engine._adapt(det, ev.gt_df)
 
 
+def test_backend_drops_unknown_classes_before_scoring(
+    tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    # Backends score only the GT vocabulary; the orchestrator drops out-of-vocab
+    # predictions (torch-free, so no extra needed) before the external library runs.
+    gt_df, preds_df = tiny_dataset
+    preds_bad = preds_df.copy()
+    preds_bad.loc[0, "instance_label"] = "class_z"  # not in GT vocabulary
+    ev = Evaluation(preds_bad, gt_df, iou_threshold=0.5, backend="ultralytics")
+    ev._define_gt("all")
+    ev._drop_unknown_pred_classes()
+
+    assert "class_z" not in set(ev._raw_preds_df["instance_label"])
+    assert "class_z" not in set(ev.preds_df["instance_label"])
+
+
 def test_confusion_process_batch_counts_tp_fp_fn() -> None:
     # 2 classes (a=0, b=1); matrix is (3, 3) with background at index 2.
     # GT: [a, b]; Det: [a, b]. Det 'a' matches GT 'a' (IoU 0.9); GT 'b' is missed

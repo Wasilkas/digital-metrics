@@ -28,18 +28,20 @@ REQUIRED_COLS_PREDS = {
 }
 
 
-def validate_dataframes(preds_df: pd.DataFrame, gt_df: pd.DataFrame, classes: list[str]) -> None:
+def validate_dataframes(preds_df: pd.DataFrame, gt_df: pd.DataFrame) -> None:
     """Validate the prediction and ground-truth DataFrames before scoring.
 
     Args:
         preds_df: Predictions DataFrame.
         gt_df: Ground-truth DataFrame for the evaluated split.
-        classes: Known ground-truth class vocabulary.
+
+    Predictions whose label is absent from the ground-truth vocabulary are not
+        checked here: :class:`~metrics.evaluation.Evaluation` warns about and
+        drops them before scoring (see ``_drop_unknown_pred_classes``).
 
     Raises:
-        ValueError: If a required column is missing, the predictions
-            ``confidence`` column has ``NA`` values, or a prediction label is
-            absent from ``classes``.
+        ValueError: If a required column is missing or the predictions
+            ``confidence`` column has ``NA`` values.
     """
     missing_gt = REQUIRED_COLS_GT - set(gt_df.columns)
     if missing_gt:
@@ -53,14 +55,4 @@ def validate_dataframes(preds_df: pd.DataFrame, gt_df: pd.DataFrame, classes: li
         raise ValueError(
             f"Predictions 'confidence' column contains {na_conf} NA value(s); "
             "every prediction must have a numeric confidence."
-        )
-
-    # Predictions must only use classes present in the ground-truth vocabulary.
-    gt_classes = set(classes)
-    pred_classes = set(preds_df["instance_label"].dropna().unique())
-    unknown = pred_classes - gt_classes
-    if unknown:
-        raise ValueError(
-            f"Prediction labels not present in ground truth: {sorted(unknown)}. "
-            f"Known ground-truth classes: {sorted(gt_classes)}."
         )

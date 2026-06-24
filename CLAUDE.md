@@ -471,8 +471,13 @@ All of the following must exist after any refactor:
   `inference/yolo_predict.py` (`predict_on_images`, `_detection_rows`) are
   torch-free (`predict_on_images` also accepts `**model_kwargs`).
 - Input validation (raises `ValueError`): missing required columns, `NA` in the
-  predictions `confidence` column, prediction labels absent from the GT class
-  vocabulary, and val/test calibration splits that share an `image_name`
+  predictions `confidence` column, and val/test calibration splits that share an
+  `image_name`. Prediction labels absent from the GT class vocabulary are **not**
+  an error: metrics are only defined for ground-truth classes, so
+  `Evaluation._drop_unknown_pred_classes` logs one warning (listing each unknown
+  label and its prediction count) and drops those rows from both `preds_df` and
+  `_raw_preds_df` before scoring — applies uniformly to the native and both backend
+  paths. `validate_dataframes` itself only checks columns + NA confidence
 - `evaluation.compute_metrics_ultralytics(split)` /
   `evaluation.compute_metrics_torchmetrics(split)` — score `split` with that
   external backend over `_raw_preds_df` and return `dict[str, DetectionMetrics]`

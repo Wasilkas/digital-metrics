@@ -107,15 +107,20 @@ def test_validate_df_raises_on_na_confidence(
         ev(split="all")
 
 
-def test_validate_df_raises_on_unknown_pred_class(
+def test_unknown_pred_class_is_dropped(
     tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
 ) -> None:
     gt_df, preds_df = tiny_dataset
     preds_bad = preds_df.copy()
     preds_bad.loc[0, "instance_label"] = "class_z"  # not in GT vocabulary
     ev = Evaluation(preds_bad, gt_df, iou_threshold=0.5)
-    with pytest.raises(ValueError, match="class_z"):
-        ev(split="all")
+    # Must not raise: the unknown class is warned about and dropped, not rejected.
+    ev(split="all", find_best_confs=False)
+
+    # The unknown class is not scored, and its prediction rows are gone.
+    assert "class_z" not in ev.metrics
+    assert "class_z" not in set(ev.preds_df["instance_label"])
+    assert "class_z" not in set(ev._raw_preds_df["instance_label"])
 
 
 def test_hungarian_keys_match_greedy(
