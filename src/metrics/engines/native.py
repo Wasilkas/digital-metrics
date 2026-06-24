@@ -60,7 +60,7 @@ class NativeEngine:
     def run(self, inputs: ScoringInputs) -> EvaluationResult:
         gt_df = inputs.gt_df
         preds_df = inputs.preds_df
-        validate_dataframes(preds_df, gt_df, self._classes)
+        validate_dataframes(preds_df, gt_df)
 
         split_image_names = gt_df["image_name"].unique().tolist()
 

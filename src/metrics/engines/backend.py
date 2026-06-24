@@ -54,7 +54,7 @@ class BackendEngine:
         gt_df = inputs.gt_df
         raw_preds_df = inputs.raw_preds_df
         # Backends score the raw predictions (YOLO val style); no conf/NMS preprocessing.
-        validate_dataframes(raw_preds_df, gt_df, self._classes)
+        validate_dataframes(raw_preds_df, gt_df)
         split_image_names = gt_df["image_name"].unique().tolist()
 
         best_confidences = {c: 0.0 for c in self._classes}

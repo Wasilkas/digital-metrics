@@ -353,6 +353,34 @@ class Evaluation:
             deepcopy(self.split_df) if split == "all" else self.split_df.query("split == @split")
         )
 
+    def _drop_unknown_pred_classes(self) -> None:
+        """Warn about and drop predictions whose label is absent from the GT vocabulary.
+
+        Metrics are only defined for ground-truth classes, so predictions of a
+        class that never appears in the ground truth (e.g. a spurious model class)
+        are removed from both ``preds_df`` and ``_raw_preds_df`` before scoring. A
+        single warning reports each dropped label and its prediction count. The
+        operation is idempotent — a second run finds nothing left to drop.
+        """
+        known = set(self.classes)
+        labels = self._raw_preds_df["instance_label"]
+        unknown = labels[labels.notna() & ~labels.isin(known)]
+        if unknown.empty:
+            return
+        counts = unknown.value_counts()
+        summary = ", ".join(f"{label}={int(n)}" for label, n in counts.items())
+        logger.warning(
+            f"Predictions contain {len(unknown)} box(es) of class(es) absent from the "
+            f"ground-truth vocabulary ({summary}); dropping them — metrics are computed "
+            "only for ground-truth classes."
+        )
+        self._raw_preds_df = self._raw_preds_df[
+            self._raw_preds_df["instance_label"].isin(known)
+        ].reset_index(drop=True)
+        self.preds_df = self.preds_df[self.preds_df["instance_label"].isin(known)].reset_index(
+            drop=True
+        )
+
     def _splits_to_predict(self, split: str, calibration_split: str | None) -> list[str] | None:
         """Splits whose images must be predicted before the evaluation runs.
 
@@ -403,6 +431,7 @@ class Evaluation:
         self._ensure_predictions(self._splits_to_predict(split, calibration_split))
         self._define_gt(split)
         assert self.gt_df is not None
+        self._drop_unknown_pred_classes()
 
         result = self._engine.run(
             ScoringInputs(
@@ -446,8 +475,9 @@ class Evaluation:
         self._ensure_predictions(self._splits_to_predict(split, None))
         self._define_gt(split)
         assert self.gt_df is not None
+        self._drop_unknown_pred_classes()
         # Backends score the raw predictions (YOLO val style); no conf/NMS preprocessing.
-        validate_dataframes(self._raw_preds_df, self.gt_df, self.classes)
+        validate_dataframes(self._raw_preds_df, self.gt_df)
         split_image_names = self.gt_df["image_name"].unique().tolist()
         logger.info(f"Computing metrics with the '{backend}' backend on split '{split}'...")
         return compute_detection_metrics(
