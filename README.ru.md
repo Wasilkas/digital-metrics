@@ -61,7 +61,7 @@ pip install git+https://github.com/Wasilkas/digital-metrics
 
 ```python
 import pandas as pd
-from metrics import Evaluation
+from digital_metrics import Evaluation
 
 preds_df = pd.read_csv("predictions.csv", index_col=0)
 split_df = pd.read_csv("ground_truth.csv", index_col=0)
@@ -106,7 +106,7 @@ ev(split="test", calibration_split="val")
 `confidence_optimization`:
 
 ```python
-from metrics import Evaluation, ConfidenceOptimization
+from digital_metrics import Evaluation, ConfidenceOptimization
 
 # По умолчанию: отдельный порог для каждого класса, максимизирующий его F1
 ev = Evaluation(preds_df, split_df, confidence_optimization="per_class")
@@ -142,7 +142,7 @@ ev(split="test", calibration_split="val")
 вариантах через параметр `matching_strategy`:
 
 ```python
-from metrics import Evaluation, MatchingStrategy
+from digital_metrics import Evaluation, MatchingStrategy
 
 # По умолчанию: iou_prior — в стиле Ultralytics (без scipy), сортировка по IoU
 ev = Evaluation(preds_df, split_df, matching_strategy="iou_prior")
@@ -194,7 +194,7 @@ ev = Evaluation(preds_df, split_df, matching_strategy="hungarian")
 Способ вычисления площади под P-R кривой задаётся параметром `ap_method`:
 
 ```python
-from metrics import Evaluation, APMethod
+from digital_metrics import Evaluation, APMethod
 
 # По умолчанию: 101-точечная интерполяция в стиле COCO / Ultralytics
 ev = Evaluation(preds_df, split_df, ap_method="interp")
@@ -312,7 +312,7 @@ Ultralytics; в остальных случаях значения по умол
 `precision / recall / f1 / ap50 / ap75 / ap50_95`):
 
 ```python
-from metrics import compute_detection_metrics
+from digital_metrics import compute_detection_metrics
 
 gt_df = split_df[split_df["split"] == "test"]
 
@@ -375,7 +375,7 @@ P/R/F1 до ~0.05 — это структурное следствие того,
 Передайте `backend=` в конструктор или вызовите бэкенд напрямую:
 
 ```python
-from metrics import Evaluation
+from digital_metrics import Evaluation
 
 ev = Evaluation(preds_df, split_df, backend="ultralytics")  # или "torchmetrics"
 ev(split="test")
@@ -433,7 +433,7 @@ coco = ev.compute_metrics_torchmetrics(split="test")
 конвейер оценки с начала, без `data.yaml`:
 
 ```python
-from metrics import Evaluation
+from digital_metrics import Evaluation
 
 # В эталоне должен быть столбец `image_path` (полный путь к каждому изображению).
 # Создайте объект с preds_df=None, затем сгенерируйте предсказания моделью:
@@ -604,7 +604,7 @@ ev(split="val")   # предсказывает из best.pt, затем оцен
 целиком свою группу и имеет приоритет над соответствующими плоскими аргументами:
 
 ```python
-from metrics import Evaluation, ScoringConfig, PreprocessConfig, InferenceConfig
+from digital_metrics import Evaluation, ScoringConfig, PreprocessConfig, InferenceConfig
 
 ev = Evaluation(
     preds_df,
@@ -701,5 +701,5 @@ uv venv && uv sync
 uv run ruff check . --fix     # линтинг
 uv run ruff format .          # форматирование
 uv run mypy src/              # проверка типов
-uv run pytest --cov=src/metrics tests/   # тесты с покрытием
+uv run pytest --cov=src/digital_metrics tests/   # тесты с покрытием
 ```

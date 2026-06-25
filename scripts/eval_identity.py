@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from metrics import Evaluation
+from digital_metrics import Evaluation
 
 ROOT = Path(__file__).parent.parent
 FIXTURES = ROOT / "fixtures"

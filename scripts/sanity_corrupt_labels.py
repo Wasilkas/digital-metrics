@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from metrics import Evaluation
+from digital_metrics import Evaluation
 
 ROOT = Path(__file__).parent.parent
 GT_PATH = ROOT / "fixtures" / "ground_truths_all.csv"

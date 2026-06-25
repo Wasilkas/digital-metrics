@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 from loguru import logger
 
-from metrics import Evaluation
+from digital_metrics import Evaluation
 
 _BBOX = ["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
 _GT_COLS = ["image_name", "instance_label", *_BBOX, "split"]

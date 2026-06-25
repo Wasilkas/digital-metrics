@@ -1,6 +1,6 @@
 import pytest
 
-from metrics.ci import calculate_confidence_interval
+from digital_metrics.ci import calculate_confidence_interval
 
 
 def test_bounds_in_unit_interval() -> None:

@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from metrics import (
+from digital_metrics import (
     Evaluation,
     InferenceConfig,
     PreprocessConfig,

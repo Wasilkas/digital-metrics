@@ -2,8 +2,8 @@ import pandas as pd
 import pytest
 from loguru import logger
 
-from metrics.calibration import ConfidenceCalibrator
-from metrics.matching import match_boxes
+from digital_metrics.calibration import ConfidenceCalibrator
+from digital_metrics.matching import match_boxes
 
 _BBOX = ["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
 _GT_COLS = ["image_name", "instance_label", *_BBOX, "split"]

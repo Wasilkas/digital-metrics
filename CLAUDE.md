@@ -58,7 +58,7 @@ Ruff config is in `pyproject.toml`. mypy runs in strict mode.
 Modules are grouped into subpackages by role. Each subpackage's ``__init__.py``
 re-exports its public names, so internal and external code imports from the
 subpackage (e.g. ``from .scoring import compute_map``), and the top-level
-``metrics/__init__.py`` keeps the public API flat (``from metrics import ...``).
+``digital_metrics/__init__.py`` keeps the public API flat (``from digital_metrics import ...``).
 ``types.py``, ``ci.py`` and ``validation.py`` stay at the top level as the shared
 foundation (``types`` depends on ``ci``), alongside the ``evaluation`` orchestrator,
 the ``calibration`` collaborator it delegates threshold selection to, and the
@@ -66,7 +66,7 @@ the ``calibration`` collaborator it delegates threshold selection to, and the
 
 ```
 src/
-  metrics/
+  digital_metrics/
     __init__.py       # public API (re-exports from the subpackages below)
     types.py          # Pydantic models: PredictMatch, Metrics, DetectionMetrics
     ci.py             # Wilson confidence interval (foundation; types depends on it)
@@ -386,7 +386,7 @@ results back to confidence-sorted index order for the P-R curve.
   - NMS: `filter_by_confidence` drops rows below threshold; `apply_nms`
     suppresses same-class containment and cross-class IoU duplicates
 
-Run: `uv run pytest --cov=src/metrics tests/`
+Run: `uv run pytest --cov=src/digital_metrics tests/`
 
 ---
 

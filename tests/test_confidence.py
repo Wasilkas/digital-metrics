@@ -3,14 +3,14 @@ import random
 import pandas as pd
 import pytest
 
-from metrics import Evaluation
-from metrics.matching import match_boxes
-from metrics.scoring import (
+from digital_metrics import Evaluation
+from digital_metrics.matching import match_boxes
+from digital_metrics.scoring import (
     find_best_confidences,
     find_best_global_confidence,
     slice_by_conf,
 )
-from metrics.types import PredictMatch
+from digital_metrics.types import PredictMatch
 
 
 def _mk(pred_label: str, gt_label: str, conf: float) -> PredictMatch:

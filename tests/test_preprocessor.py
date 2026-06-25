@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from metrics.preprocess import PredictionPreprocessor
+from digital_metrics.preprocess import PredictionPreprocessor
 
 _PRED_COLS = [
     "image_name",

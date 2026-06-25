@@ -23,10 +23,10 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from metrics import Evaluation, compute_detection_metrics
-from metrics.matching import match_boxes
-from metrics.scoring import find_best_global_confidence
-from metrics.types import PredictMatch
+from digital_metrics import Evaluation, compute_detection_metrics
+from digital_metrics.matching import match_boxes
+from digital_metrics.scoring import find_best_global_confidence
+from digital_metrics.types import PredictMatch
 
 plt.switch_backend("Agg")
 

@@ -9,7 +9,7 @@ import importlib.util
 import pandas as pd
 import pytest
 
-from metrics import DetectionMetrics, compute_detection_metrics
+from digital_metrics import DetectionMetrics, compute_detection_metrics
 
 _BACKENDS = ["ultralytics", "torchmetrics"]
 

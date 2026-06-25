@@ -11,7 +11,7 @@ import pytest
 
 pytest.importorskip("torchmetrics")
 
-from metrics import DetectionMetrics, compute_torchmetrics_metrics  # noqa: E402
+from digital_metrics import DetectionMetrics, compute_torchmetrics_metrics  # noqa: E402
 
 _GT_COLS = ["image_name", "instance_label", "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
 _PRED_COLS = [
