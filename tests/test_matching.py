@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from metrics.matching import match_boxes
+from digital_metrics.matching import match_boxes
 
 
 def _count(matches: dict[str, list[object]], label: str, mtype: str) -> int:  # type: ignore[type-arg]

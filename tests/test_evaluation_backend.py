@@ -12,14 +12,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from metrics import DetectionMetrics, Evaluation, Metrics
-from metrics.backends.ultralytics_metrics import (
+from digital_metrics import DetectionMetrics, Evaluation, Metrics
+from digital_metrics.backends.ultralytics_metrics import (
     _conf_at_max_f1,
     _confusion_process_batch,
     _read_prf1_at_conf,
     compute_ultralytics_confusion_matrix,
 )
-from metrics.engines import BackendEngine
+from digital_metrics.engines import BackendEngine
 
 
 def _f1(p: float, r: float) -> float:

@@ -12,7 +12,7 @@ test split:
       Ultralytics uses to produce mAP50 and mAP50-95.
 
 To make the comparison exact we mirror what ``compute_map`` does internally
-(see src/metrics/ap.py): evaluate on the ``test`` GT split and keep only the
+(see src/digital_metrics/ap.py): evaluate on the ``test`` GT split and keep only the
 predictions whose ``image_name`` appears in that split. Our library is then run
 with the documented YOLO recipe (``matching_strategy="iou_prior"``,
 ``ap_method="interp"``), which is the per-class equivalent of Ultralytics'
@@ -32,7 +32,7 @@ import torch
 from loguru import logger
 from ultralytics.utils.metrics import ap_per_class, box_iou
 
-from metrics import Evaluation
+from digital_metrics import Evaluation
 
 ROOT = Path(__file__).parent.parent
 FIXTURES = ROOT / "fixtures"

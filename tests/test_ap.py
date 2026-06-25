@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from metrics.scoring import APMethod, compute_ap, compute_map
-from metrics.types import Metrics
+from digital_metrics.scoring import APMethod, compute_ap, compute_map
+from digital_metrics.types import Metrics
 
 _BBOX = ["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
 _GT_COLS = ["image_name", "instance_label", *_BBOX, "split"]

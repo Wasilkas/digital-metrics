@@ -5,9 +5,9 @@ import math
 import pandas as pd
 import pytest
 
-from metrics import Evaluation
-from metrics.calibration import ConfidenceCalibrator
-from metrics.engines import BackendEngine, EvaluationResult, NativeEngine, ScoringInputs
+from digital_metrics import Evaluation
+from digital_metrics.calibration import ConfidenceCalibrator
+from digital_metrics.engines import BackendEngine, EvaluationResult, NativeEngine, ScoringInputs
 
 
 def _native_engine(classes: list[str]) -> NativeEngine:

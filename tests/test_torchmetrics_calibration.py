@@ -12,8 +12,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from metrics import Evaluation
-from metrics.backends.torchmetrics_metrics import (
+from digital_metrics import Evaluation
+from digital_metrics.backends.torchmetrics_metrics import (
     _conf_at_max_f1,
     _global_conf_at_max_mean_f1,
     _read_prf1_at_conf,

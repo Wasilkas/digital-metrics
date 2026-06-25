@@ -10,7 +10,7 @@ import pytest
 
 pytest.importorskip("ultralytics")
 
-from metrics import YoloMetrics, compute_ultralytics_metrics  # noqa: E402
+from digital_metrics import YoloMetrics, compute_ultralytics_metrics  # noqa: E402
 
 _GT_COLS = ["image_name", "instance_label", "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
 _PRED_COLS = [

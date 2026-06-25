@@ -58,7 +58,7 @@ When evaluation runs, inputs are validated and a `ValueError` is raised on:
 
 ```python
 import pandas as pd
-from metrics import Evaluation
+from digital_metrics import Evaluation
 
 preds_df = pd.read_csv("predictions.csv", index_col=0)
 split_df = pd.read_csv("ground_truth.csv", index_col=0)
@@ -99,7 +99,7 @@ thresholds are tuned automatically. Two modes are available via
 `confidence_optimization=`:
 
 ```python
-from metrics import Evaluation, ConfidenceOptimization
+from digital_metrics import Evaluation, ConfidenceOptimization
 
 # Default: one threshold per class, each maximising that class's F1
 ev = Evaluation(preds_df, split_df, confidence_optimization="per_class")
@@ -132,7 +132,7 @@ calibration split and applied to the evaluation split.
 ## Matching strategies
 
 ```python
-from metrics import Evaluation, MatchingStrategy
+from digital_metrics import Evaluation, MatchingStrategy
 
 # Default: iou_prior (Ultralytics non-scipy style — IoU-sorted, label-aware)
 ev = Evaluation(preds_df, split_df, matching_strategy="iou_prior")
@@ -242,7 +242,7 @@ and returns `dict[str, DetectionMetrics]` (per-class
 `precision / recall / f1 / ap50 / ap75 / ap50_95`):
 
 ```python
-from metrics import compute_detection_metrics
+from digital_metrics import compute_detection_metrics
 
 gt_df = split_df[split_df["split"] == "test"]
 
@@ -306,7 +306,7 @@ matrix — unchanged. Pass `backend=` to the constructor, or call a backend
 directly:
 
 ```python
-from metrics import Evaluation
+from digital_metrics import Evaluation
 
 ev = Evaluation(preds_df, split_df, backend="ultralytics")  # or "torchmetrics"
 ev(split="test")
@@ -362,7 +362,7 @@ straight from the ground-truth DataFrame — `Evaluation.predict_to_dataframe`
 closes the eval pipeline at the front, no `data.yaml` needed:
 
 ```python
-from metrics import Evaluation
+from digital_metrics import Evaluation
 
 # Ground truth must carry an `image_path` column (full path to each image).
 # Construct with preds_df=None, then generate predictions from the model:
@@ -527,7 +527,7 @@ kwarg above still works unchanged — and each group, when passed, supplies that
 whole group and takes precedence over its corresponding flat kwargs:
 
 ```python
-from metrics import Evaluation, ScoringConfig, PreprocessConfig, InferenceConfig
+from digital_metrics import Evaluation, ScoringConfig, PreprocessConfig, InferenceConfig
 
 ev = Evaluation(
     preds_df,
@@ -560,5 +560,5 @@ uv venv && uv sync
 uv run ruff check . --fix
 uv run ruff format .
 uv run mypy src/
-uv run pytest --cov=src/metrics tests/
+uv run pytest --cov=src/digital_metrics tests/
 ```

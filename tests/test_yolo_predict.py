@@ -11,8 +11,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from metrics import Evaluation
-from metrics.inference.yolo_predict import _PRED_COLUMNS, _detection_rows
+from digital_metrics import Evaluation
+from digital_metrics.inference.yolo_predict import _PRED_COLUMNS, _detection_rows
 
 _REQUIRED = [
     "image_name",
@@ -148,7 +148,7 @@ def test_auto_predict_targets_eval_and_calibration_splits(
     # The weights flow must predict on exactly the eval + calibration splits,
     # not the whole split_df (here: skip 'train'). Stub out the model call and
     # capture which image paths it was handed.
-    import metrics.evaluation as evaluation_module
+    import digital_metrics.evaluation as evaluation_module
 
     gt_df = pd.DataFrame(
         [
@@ -184,7 +184,7 @@ def test_auto_predict_targets_eval_and_calibration_splits(
 def test_predict_kwargs_forwarded_to_model(monkeypatch: pytest.MonkeyPatch) -> None:
     # predict_kwargs on the constructor must reach Ultralytics' model.predict via
     # the auto-predict (weights) flow.
-    import metrics.evaluation as evaluation_module
+    import digital_metrics.evaluation as evaluation_module
 
     gt_df = pd.DataFrame(
         [("test1", "class_a", 0, 0, 10, 10, "test")],

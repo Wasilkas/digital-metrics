@@ -1,8 +1,8 @@
 import pandas as pd
 import pytest
 
-from metrics.evaluation import Evaluation
-from metrics.preprocess import apply_nms, filter_by_confidence
+from digital_metrics.evaluation import Evaluation
+from digital_metrics.preprocess import apply_nms, filter_by_confidence
 
 # ---------------------------------------------------------------------------
 # Helpers

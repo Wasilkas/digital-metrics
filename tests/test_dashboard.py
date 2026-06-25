@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from metrics import Evaluation
+from digital_metrics import Evaluation
 
 
 def _simple_evaluation() -> Evaluation:
