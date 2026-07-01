@@ -22,6 +22,7 @@ uv run pytest    # run tests inside venv
 
 uv sync --extra ultralytics    # optional YOLO-comparable metrics backend (heavy: torch)
 uv sync --extra torchmetrics   # optional COCO-mAP metrics backend (heavy: torch)
+uv sync --extra clearml        # optional ClearML experiment tracking layer (torch-free)
 ```
 
 Never use `pip` directly. Always use `uv`.
@@ -99,6 +100,9 @@ src/
     reporting/        # output artifacts
       __init__.py     # re-exports: get_dashboards, plot_confidence_intervals
       dashboard.py    # Excel export + CI plots
+    tracking/         # optional ClearML experiment tracking (separate layer, lazy clearml import)
+      __init__.py     # re-exports: ClearMLTracker, summarize_metrics
+      clearml_tracker.py # ClearMLTracker: mirror an Evaluation's scalars/artifacts/plots/logs into a ClearML Task
     backends/         # optional, torch-backed metric backends (lazy torch import)
       __init__.py     # re-exports: compute_detection_metrics/Backend, compute_ultralytics_*/find_ultralytics_confidence, compute_torchmetrics_metrics/find_torchmetrics_confidence, YoloMetrics
       external.py     # single entry point: compute_detection_metrics(backend=...)
@@ -127,6 +131,7 @@ tests/
   test_torchmetrics_metrics.py # optional; skipped unless `torchmetrics` is installed
   test_torchmetrics_calibration.py # torch-free curve helpers + optional when-installed calibration
   test_yolo_predict.py         # predict_to_dataframe: torch-free helpers, image_path/ImportError guards
+  test_clearml_tracker.py      # ClearMLTracker: summarize_metrics nanmean + scalar/artifact/plot/loguru dispatch via fake Task (torch/clearml-free)
 scripts/
   eval.py             # local evaluation script (see "Local Evaluation" section)
   profile_backends.py # time + cProfile native vs ultralytics vs torchmetrics (--calibrated, --gt/--preds/--only)
@@ -303,6 +308,41 @@ skipped when their extra is absent):
 - `scripts/plot_prf1_vs_map.py` — renders the figures in `docs/why_prf1_differs.md`
   (means bars + a per-class P-R curve) explaining why mAP agrees across the three
   ways but P/R/F1 don't (operating-point + raw-vs-COCO-envelope readout).
+
+### ClearML tracking (optional, separate layer)
+
+`tracking/clearml_tracker.py` is a **standalone** layer sitting on top of a
+finished `Evaluation` — the core evaluation code knows nothing about ClearML.
+`clearml` is an optional extra (`pip install digital-metrics[clearml]`), imported
+lazily; the core install stays torch/ClearML-free.
+
+```python
+from digital_metrics import ClearMLTracker
+
+with ClearMLTracker(project_name="detector", task_name="run-42") as tracker:
+    evaluation("test", calibration_split="val")
+    tracker.log_evaluation(evaluation)   # scalars + artifacts + plots
+```
+
+`ClearMLTracker(task=None, *, project_name, task_name, output_uri, attach_logs,
+log_level, **task_init_kwargs)` — pass an existing `Task` or let it `Task.init`
+one. `clearml` is imported **only** when it creates the task, so an injected
+`task` (tests) needs no extra. `attach_logs=True` (default) installs a `loguru`
+sink forwarding run logs to the ClearML console. `log_evaluation(evaluation, *,
+iteration, artifacts_dir, save_to_excel, save_confusion_matrix)` runs
+`get_dashboards` once and mirrors four things:
+
+- **Scalars** — per-class P/R/F1/mAP as scalar plots, the per-class metrics table,
+  and headline means (`mean_*`, nan-aware for AP) as single values.
+- **Artifacts** — the analyst/production dashboard DataFrames, `best_confidences`,
+  the confusion matrix, and the Excel files `get_dashboards` wrote.
+- **Plots** — the four CI PNGs as images + the confusion matrix as a CM plot.
+- **Logs** — via the loguru sink.
+
+`summarize_metrics(metrics) -> (df, means)` is the torch/ClearML-free helper
+(per-class DataFrame + nan-aware means) it uses; also public. The layer methods
+(`log_scalars` / `log_artifacts` / `log_plots` / `attach_loguru` /
+`detach_loguru` / `close`) can be called individually.
 
 ---
 
@@ -557,3 +597,15 @@ All of the following must exist after any refactor:
   `find_ultralytics_confidence`: F1-optimal confidence from its IoU-0.50 curve.
   `mode="global"` returns a `float`, `"per_class"` a `dict[str, float]`; pair with
   `compute_torchmetrics_metrics(conf_threshold=...)`. Requires the `torchmetrics` extra
+- `ClearMLTracker(task, project_name, task_name, output_uri, attach_logs,
+  log_level, **task_init_kwargs)` and `summarize_metrics(metrics)` exported from
+  `metrics` (defined in `tracking/clearml_tracker.py`) — standalone ClearML
+  tracking layer over a finished `Evaluation`. `log_evaluation(evaluation, *,
+  iteration, artifacts_dir, save_to_excel, save_confusion_matrix)` mirrors
+  scalars + a per-class table + `mean_*` single values, artifacts (dashboard
+  DataFrames, `best_confidences`, confusion matrix, written `.xlsx` files), the CI
+  PNGs + confusion-matrix plot, and (via `attach_loguru`) run logs. Individual
+  layers `log_scalars` / `log_artifacts` / `log_plots` / `attach_loguru` /
+  `detach_loguru` / `close`; context-manager closes the task. `clearml` is an
+  optional extra imported lazily and **only** when the tracker creates its own
+  task (an injected `task=` needs no extra); `summarize_metrics` is torch/ClearML-free

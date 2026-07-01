@@ -35,6 +35,9 @@ ultralytics = ["ultralytics>=8.3"]
 # General COCO mAP via torchmetrics' MeanAveragePrecision (also needs
 # torchvision + pycocotools, supplied by the [detection] extra).
 torchmetrics = ["torchmetrics[detection]>=1.0"]
+# Experiment tracking: mirror an Evaluation's scalars/artifacts/plots/logs into a
+# ClearML Task via the standalone ClearMLTracker layer (torch-free).
+clearml = ["clearml>=1.13"]
 
 [project.urls]
 Homepage = "https://github.com/Wasilkas/digital-metrics"
@@ -64,7 +67,7 @@ select = ["E", "F", "I", "UP", "B", "FBT"]
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["scipy.*", "sklearn.*", "tqdm.*", "torch.*", "torchmetrics.*"]
+module = ["scipy.*", "sklearn.*", "tqdm.*", "torch.*", "torchmetrics.*", "clearml.*"]
 ignore_missing_imports = true
 
 # ultralytics ships no usable type information; once the extra is installed mypy

@@ -12,11 +12,13 @@ from .config import InferenceConfig, PreprocessConfig, ScoringConfig
 from .evaluation import Evaluation
 from .matching import MatchingStrategy
 from .scoring import APMethod, ConfidenceOptimization
+from .tracking import ClearMLTracker, summarize_metrics
 from .types import DetectionMetrics, Metrics, PredictMatch
 
 __all__ = [
     "APMethod",
     "Backend",
+    "ClearMLTracker",
     "ConfidenceOptimization",
     "DetectionMetrics",
     "Evaluation",
@@ -33,4 +35,5 @@ __all__ = [
     "compute_ultralytics_metrics",
     "find_torchmetrics_confidence",
     "find_ultralytics_confidence",
+    "summarize_metrics",
 ]
