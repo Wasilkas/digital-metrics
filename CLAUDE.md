@@ -69,6 +69,16 @@ Ruff config is in `pyproject.toml`. mypy runs in strict mode.
 
 ---
 
+## External Library Documentation
+
+**Always use context7** to pull up-to-date documentation before writing or changing
+code that touches a third-party library (e.g. `ultralytics`, `torchmetrics`,
+`clearml`, `pandas`, `pydantic`). Do not rely on memory for external APIs — resolve
+the library and fetch the relevant docs via context7 first, then implement against
+what the current version actually exposes.
+
+---
+
 ## Project Structure
 
 Modules are grouped into subpackages by role. Each subpackage's ``__init__.py``
