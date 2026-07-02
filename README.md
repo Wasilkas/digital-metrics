@@ -17,9 +17,19 @@ uv pip install git+https://github.com/Wasilkas/digital-metrics
 pip install git+https://github.com/Wasilkas/digital-metrics
 ```
 
-Requires Python 3.11+. The core install is `torch`-free; the optional
-`ultralytics` / `torchmetrics` backends are extras — see
-[External metrics backends](#external-metrics-backends-single-entry-point).
+Requires Python 3.11+. The core install is `torch`-free. Optional extras add the
+`ultralytics` / `torchmetrics` metrics backends (see
+[External metrics backends](#external-metrics-backends-single-entry-point)) and
+the `clearml` experiment-tracking layer (see
+[Experiment tracking (ClearML)](#experiment-tracking-clearml)):
+
+```bash
+uv pip install "digital-metrics[ultralytics] @ git+https://github.com/Wasilkas/digital-metrics"
+uv pip install "digital-metrics[torchmetrics] @ git+https://github.com/Wasilkas/digital-metrics"
+uv pip install "digital-metrics[clearml]      @ git+https://github.com/Wasilkas/digital-metrics"
+```
+
+`clearml` is `torch`-free; the two backends each pull in `torch`.
 
 ---
 
@@ -385,6 +395,12 @@ ev(split="val")                                    # evaluate as usual
   `ev.predict_to_dataframe("best.pt", split="val", imgsz=1280, half=True, augment=True)`
   — or, in the auto-predict flow, via the constructor's
   `predict_kwargs={"imgsz": 1280, "half": True}`.
+- **GPU memory** — inference runs in chunks of `batch` images (default 16), so
+  peak VRAM stays bounded (≈ `batch` × per-image cost) instead of growing with the
+  image count. If a run OOMs, lower `batch` first, then `imgsz`, and/or set
+  `half=True` — e.g. `predict_kwargs={"batch": 4, "imgsz": 1280, "half": True}`.
+  (`batch` is a genuine chunk size here; the Ultralytics `batch` predict kwarg is a
+  no-op in streaming mode.)
 - `predict_to_dataframe` also **returns** the predictions DataFrame, so you can
   save it (`df.to_csv(...)`) or feed it to
   [`compute_detection_metrics`](#external-metrics-backends-single-entry-point).
@@ -450,6 +466,63 @@ audit_df = ev.get_topk_confusions(main_class="car", k=20)
 # DataFrames annotated with match type for visualisation
 gt_vis, pred_vis = ev.get_dfs_visualization()
 ```
+
+---
+
+## Experiment tracking (ClearML)
+
+`ClearMLTracker` mirrors a finished `Evaluation` into a
+[ClearML](https://clear.ml) task — scalars, artifacts, plots and logs — so runs
+are versioned and comparable in the ClearML UI. It is a **standalone layer** that
+sits on top of `Evaluation`; the core evaluation code knows nothing about ClearML,
+and `clearml` is an optional, `torch`-free extra imported lazily.
+
+```bash
+uv pip install "digital-metrics[clearml] @ git+https://github.com/Wasilkas/digital-metrics"
+```
+
+```python
+from digital_metrics import Evaluation, ClearMLTracker
+
+ev = Evaluation(preds_df, split_df, iou_threshold=0.5)
+
+with ClearMLTracker(project_name="detector", task_name="run-42") as tracker:
+    ev(split="test", calibration_split="val")
+    tracker.log_evaluation(ev)     # scalars + artifacts + plots + logs
+```
+
+`log_evaluation(ev, *, iteration=0, artifacts_dir=None, save_to_excel=True,
+save_confusion_matrix=True)` runs `get_dashboards` once and mirrors four things:
+
+- **Scalars** — per-class P/R/F1/mAP as scalar plots, the per-class metrics table,
+  and headline means (`mean_*`, nan-aware for AP) as single values.
+- **Artifacts** — the analyst/production dashboard DataFrames, `best_confidences`,
+  the confusion matrix, and any Excel files `get_dashboards` wrote.
+- **Plots** — the four confidence-interval PNGs as images and the confusion matrix
+  as a CM plot.
+- **Logs** — run logs, via a `loguru` sink attached to the ClearML console.
+
+```python
+ClearMLTracker(
+    task=None,                 # inject an existing clearml.Task, or let it Task.init one
+    *,
+    project_name="detector",   # used only when it creates the task
+    task_name="run-42",
+    output_uri=None,           # where ClearML stores artifacts/models
+    attach_logs=True,          # install the loguru → ClearML console sink
+    log_level="INFO",
+    **task_init_kwargs,        # forwarded to Task.init
+)
+```
+
+- `clearml` is imported **only** when the tracker creates its own task, so passing
+  an existing `task=` needs no extra installed (handy in tests).
+- The individual layers are also public: `log_scalars` / `log_artifacts` /
+  `log_plots` / `attach_loguru` / `detach_loguru` / `close`. Used as a context
+  manager, it closes the task on exit.
+- `summarize_metrics(metrics) -> (per_class_df, means)` is the `torch`/ClearML-free
+  helper it uses to build the per-class table and nan-aware means; it is public and
+  callable on any `dict[str, Metrics]` on its own.
 
 ---
 
