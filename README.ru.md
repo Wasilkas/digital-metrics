@@ -18,9 +18,19 @@ uv pip install git+https://github.com/Wasilkas/digital-metrics
 pip install git+https://github.com/Wasilkas/digital-metrics
 ```
 
-Требуется Python 3.11+. Базовая установка не тянет `torch`; опциональные
-бэкенды `ultralytics` / `torchmetrics` подключаются как extras — см.
-[Внешние бэкенды метрик](#внешние-бэкенды-метрик-единая-точка-входа).
+Требуется Python 3.11+. Базовая установка не тянет `torch`. Опциональные extras
+добавляют бэкенды метрик `ultralytics` / `torchmetrics` (см.
+[Внешние бэкенды метрик](#внешние-бэкенды-метрик-единая-точка-входа)) и слой
+трекинга экспериментов `clearml` (см.
+[Трекинг экспериментов (ClearML)](#трекинг-экспериментов-clearml)):
+
+```bash
+uv pip install "digital-metrics[ultralytics] @ git+https://github.com/Wasilkas/digital-metrics"
+uv pip install "digital-metrics[torchmetrics] @ git+https://github.com/Wasilkas/digital-metrics"
+uv pip install "digital-metrics[clearml]      @ git+https://github.com/Wasilkas/digital-metrics"
+```
+
+`clearml` не тянет `torch`; оба бэкенда метрик тянут `torch`.
 
 ---
 
@@ -459,6 +469,13 @@ ev(split="val")                                    # обычная оценка
   `ev.predict_to_dataframe("best.pt", split="val", imgsz=1280, half=True, augment=True)`
   — либо в режиме авто-предсказания через конструктор:
   `predict_kwargs={"imgsz": 1280, "half": True}`.
+- **Память GPU** — инференс идёт чанками по `batch` изображений (по умолчанию 16),
+  поэтому пик VRAM ограничен (≈ `batch` × стоимость одной картинки) и не растёт с
+  числом изображений. Если прогон падает по памяти, сначала уменьшите `batch`,
+  затем `imgsz` и/или включите `half=True` — например,
+  `predict_kwargs={"batch": 4, "imgsz": 1280, "half": True}`. (`batch` здесь —
+  настоящий размер чанка; штатный аргумент `batch` в `model.predict` в
+  стриминг-режиме не работает.)
 - `predict_to_dataframe` также **возвращает** DataFrame с предсказаниями — его можно
   сохранить (`df.to_csv(...)`) или передать в `compute_detection_metrics`.
 - `image_name=` задаёт формат `image_name` (`"name"` — имя файла с расширением, по
@@ -523,6 +540,65 @@ audit_df = ev.get_topk_confusions(main_class="car", k=20)
 # DataFrame с разметкой типа сопоставления для визуализации
 gt_vis, pred_vis = ev.get_dfs_visualization()
 ```
+
+---
+
+## Трекинг экспериментов (ClearML)
+
+`ClearMLTracker` переносит завершённый `Evaluation` в задачу
+[ClearML](https://clear.ml) — скаляры, артефакты, графики и логи, — чтобы прогоны
+версионировались и сравнивались в UI ClearML. Это **самостоятельный слой** поверх
+`Evaluation`: сам код оценки ничего не знает про ClearML, а `clearml` — опциональный
+extra без `torch`, импортируемый лениво.
+
+```bash
+uv pip install "digital-metrics[clearml] @ git+https://github.com/Wasilkas/digital-metrics"
+```
+
+```python
+from digital_metrics import Evaluation, ClearMLTracker
+
+ev = Evaluation(preds_df, split_df, iou_threshold=0.5)
+
+with ClearMLTracker(project_name="detector", task_name="run-42") as tracker:
+    ev(split="test", calibration_split="val")
+    tracker.log_evaluation(ev)     # скаляры + артефакты + графики + логи
+```
+
+`log_evaluation(ev, *, iteration=0, artifacts_dir=None, save_to_excel=True,
+save_confusion_matrix=True)` один раз запускает `get_dashboards` и переносит четыре
+вещи:
+
+- **Скаляры** — P/R/F1/mAP по классам как скалярные графики, таблицу метрик по
+  классам и средние по датасету (`mean_*`, с nan-безопасным усреднением для AP) как
+  одиночные значения.
+- **Артефакты** — DataFrame'ы дашбордов (аналитический/продакшен), `best_confidences`,
+  матрицу ошибок и Excel-файлы, которые записал `get_dashboards`.
+- **Графики** — четыре PNG доверительных интервалов как изображения и матрицу ошибок
+  как CM-график.
+- **Логи** — логи прогона через `loguru`-сток, подключённый к консоли ClearML.
+
+```python
+ClearMLTracker(
+    task=None,                 # передать существующий clearml.Task или дать создать Task.init
+    *,
+    project_name="detector",   # используется только при создании задачи
+    task_name="run-42",
+    output_uri=None,           # куда ClearML складывает артефакты/модели
+    attach_logs=True,          # подключить сток loguru → консоль ClearML
+    log_level="INFO",
+    **task_init_kwargs,        # передаётся в Task.init
+)
+```
+
+- `clearml` импортируется **только** когда трекер сам создаёт задачу, поэтому при
+  передаче готового `task=` extra не нужен (удобно в тестах).
+- Отдельные слои тоже публичны: `log_scalars` / `log_artifacts` / `log_plots` /
+  `attach_loguru` / `detach_loguru` / `close`. Как контекстный менеджер закрывает
+  задачу на выходе.
+- `summarize_metrics(metrics) -> (df_по_классам, means)` — используемый им
+  `torch`/ClearML-независимый помощник (таблица по классам + nan-безопасные средние);
+  он публичен и вызывается на любом `dict[str, Metrics]` отдельно.
 
 ---
 

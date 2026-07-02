@@ -1,6 +1,6 @@
 [project]
 name = "digital-metrics"
-version = "0.3.0"
+version = "0.3.1"
 description = "Object detection evaluation library: precision, recall, mAP50/75/50-95, F1, Cohen's kappa, confidence intervals."
 readme = "README.md"
 requires-python = ">=3.11"

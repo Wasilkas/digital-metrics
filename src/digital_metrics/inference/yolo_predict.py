@@ -84,11 +84,21 @@ def predict_on_images(
     conf: float = 0.001,
     iou: float = 0.7,
     imgsz: int = 640,
+    batch: int = 16,
     device: str | None = None,
     image_name: ImageNameMode = "name",
     **model_kwargs: Any,
 ) -> pd.DataFrame:
     """Run a YOLO model over ``image_paths`` and return predictions in our schema.
+
+    Inference is issued in chunks of ``batch`` images (one ``model.predict`` call
+    per chunk) rather than one streamed call over the whole list. Ultralytics'
+    predictor retains per-image GPU tensors for the lifetime of a single
+    ``predict`` call, so streaming the entire list grows peak VRAM roughly linearly
+    with the image count and OOMs on large sets; chunking bounds peak VRAM to
+    ``batch`` images regardless of how many are scored. ``batch`` is therefore the
+    knob to turn when a run runs out of GPU memory (together with ``imgsz`` and
+    ``half=True``).
 
     Args:
         weights: Path to Ultralytics model weights (``.pt``).
@@ -98,6 +108,9 @@ def predict_on_images(
             default) so the full precision-recall curve is available downstream.
         iou: NMS IoU threshold for inference (YOLO val default ``0.7``).
         imgsz: Inference image size.
+        batch: Number of images per ``model.predict`` call. Bounds peak GPU memory
+            (peak ≈ ``batch`` × per-image cost); lower it to fit a smaller card,
+            raise it for throughput. Must be ``>= 1``.
         device: Torch device (e.g. ``"0"``, ``"cpu"``); ``None`` lets Ultralytics
             choose.
         image_name: How to fill ``image_name`` — ``"name"`` (filename with
@@ -105,8 +118,8 @@ def predict_on_images(
             extension) or ``"path"`` (full path).
         **model_kwargs: Extra keyword arguments forwarded verbatim to
             ``model.predict`` (e.g. ``half``, ``augment``, ``agnostic_nms``,
-            ``max_det``, ``classes``, ``retina_masks``). ``source``, ``stream`` and
-            ``verbose`` are managed here and must not be passed.
+            ``max_det``, ``classes``, ``retina_masks``). ``source``, ``stream``,
+            ``batch`` and ``verbose`` are managed here and must not be passed.
 
     Returns:
         DataFrame with the columns in ``_PRED_COLUMNS``; empty (with columns) when
@@ -114,48 +127,57 @@ def predict_on_images(
 
     Raises:
         ImportError: If the optional ``ultralytics`` dependency is not installed.
+        ValueError: If ``batch < 1``.
     """
+    if batch < 1:
+        raise ValueError(f"batch must be >= 1, got {batch}.")
     try:
         from ultralytics import YOLO
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(_INSTALL_HINT) from exc
 
+    paths = [str(p) for p in image_paths]
     model = YOLO(str(weights))
     names: dict[int, str] = model.names  # class index → name, as the model emits cls
     logger.info(
-        f"Predicting on {len(image_paths)} images (conf={conf}, iou={iou}, imgsz={imgsz})..."
+        f"Predicting on {len(paths)} images "
+        f"(conf={conf}, iou={iou}, imgsz={imgsz}, batch={batch})..."
     )
 
     rows: list[dict[str, Any]] = []
     n_images = 0
-    results = model.predict(
-        source=[str(p) for p in image_paths],
-        stream=True,
-        conf=conf,
-        iou=iou,
-        imgsz=imgsz,
-        device=device,
-        verbose=False,
-        **model_kwargs,
-    )
-    # Ultralytics yields results in input order but rewrites ``r.path`` to generic
-    # names for a list source, so name from the original path instead (strict zip
-    # would surface any count mismatch rather than silently misalign).
-    for path, r in zip(image_paths, results, strict=True):
-        n_images += 1
-        boxes = r.boxes
-        if boxes is None or len(boxes) == 0:
-            continue
-        rows.extend(
-            _detection_rows(
-                str(path),
-                boxes.xyxy.cpu().numpy(),
-                boxes.conf.cpu().numpy(),
-                boxes.cls.cpu().numpy(),
-                names,
-                image_name,
-            )
+    # Chunk the source list: peak VRAM stays bounded to ``batch`` images because
+    # each ``predict`` call releases its retained tensors when it finishes.
+    for start in range(0, len(paths), batch):
+        chunk = paths[start : start + batch]
+        results = model.predict(
+            source=chunk,
+            stream=True,
+            conf=conf,
+            iou=iou,
+            imgsz=imgsz,
+            device=device,
+            verbose=False,
+            **model_kwargs,
         )
+        # Ultralytics yields results in input order but rewrites ``r.path`` to
+        # generic names for a list source, so name from the original path instead
+        # (strict zip surfaces any count mismatch rather than silently misalign).
+        for path, r in zip(chunk, results, strict=True):
+            n_images += 1
+            boxes = r.boxes
+            if boxes is None or len(boxes) == 0:
+                continue
+            rows.extend(
+                _detection_rows(
+                    path,
+                    boxes.xyxy.cpu().numpy(),
+                    boxes.conf.cpu().numpy(),
+                    boxes.cls.cpu().numpy(),
+                    names,
+                    image_name,
+                )
+            )
 
     logger.info(f"Predicted {len(rows)} boxes over {n_images} images.")
     return pd.DataFrame(rows, columns=_PRED_COLUMNS)

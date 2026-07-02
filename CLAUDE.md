@@ -29,6 +29,21 @@ Never use `pip` directly. Always use `uv`.
 
 ---
 
+## Versioning
+
+Bump the component version (`version` in `pyproject.toml`, `MAJOR.MINOR.PATCH`)
+on **every** release — do not ship changes without a version bump. Which part to
+increment:
+
+- **PATCH** (`0.3.0` → `0.3.1`) — bug fixes.
+- **MINOR** (`0.3.1` → `0.4.0`) — new features.
+- **MAJOR** (`0.4.0` → `1.0.0`) — a release / breaking change.
+
+After editing `pyproject.toml`, run `uv sync` (or `uv lock`) so `uv.lock` records
+the new version too.
+
+---
+
 ## Code Style
 
 ### Linting & type-checking
@@ -498,7 +513,7 @@ All of the following must exist after any refactor:
   optimisation it logs a warning for any class whose chosen threshold equals the
   minimum prediction confidence (the cut keeps every detection, so optimisation
   had no effect — e.g. identical pred/GT boxes)
-- `evaluation.predict_to_dataframe(weights, split, conf, iou, imgsz, device,
+- `evaluation.predict_to_dataframe(weights, split, conf, iou, imgsz, batch, device,
   image_name, **model_kwargs)` — optional YOLO inference: runs Ultralytics
   ``weights`` over the images in ``split_df['image_path']`` and stores predictions
   in the standard schema as ``preds_df``/``_raw_preds_df`` (``image_name`` = last
@@ -509,7 +524,15 @@ All of the following must exist after any refactor:
   `ImportError` with hint); raises `ValueError` when `split_df` has no `image_path`
   column (or no `"split"` column when `split` is given). Row-building helpers in
   `inference/yolo_predict.py` (`predict_on_images`, `_detection_rows`) are
-  torch-free (`predict_on_images` also accepts `**model_kwargs`).
+  torch-free (`predict_on_images` also accepts `batch` + `**model_kwargs`).
+  `batch` (default 16) is the chunk size fed to each `model.predict` call and the
+  primary **GPU-memory lever**: inference runs in chunks of `batch` images so peak
+  VRAM stays bounded (≈ `batch` × per-image cost) instead of growing with the image
+  count — streaming the whole list in one call OOMs on large sets because
+  Ultralytics' predictor retains per-image GPU tensors for the whole call. Lower
+  `batch` (and/or `imgsz`, or set `half=True`) to fit a smaller card; the
+  Ultralytics `batch` predict kwarg itself is a no-op in streaming mode, so this
+  chunk size is the real knob. `batch` also flows through `predict_kwargs`.
 - Input validation (raises `ValueError`): missing required columns, `NA` in the
   predictions `confidence` column, and val/test calibration splits that share an
   `image_name`. Prediction labels absent from the GT class vocabulary are **not**

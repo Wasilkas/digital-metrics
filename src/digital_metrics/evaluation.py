@@ -248,6 +248,7 @@ class Evaluation:
         conf: float = 0.001,
         iou: float = 0.7,
         imgsz: int = 640,
+        batch: int = 16,
         device: str | None = None,
         image_name: ImageNameMode = "name",
         **model_kwargs: Any,
@@ -270,6 +271,9 @@ class Evaluation:
                 P-R curve available downstream).
             iou: Inference NMS IoU threshold.
             imgsz: Inference image size.
+            batch: Images per ``model.predict`` call. Bounds peak GPU memory
+                (peak ≈ ``batch`` × per-image cost), so lower it to fit a smaller
+                card; the main OOM lever alongside ``imgsz`` and ``half=True``.
             device: Torch device (e.g. ``"0"``, ``"cpu"``); ``None`` auto-selects.
             image_name: ``image_name`` format — ``"name"`` (filename with
                 extension, default), ``"stem"`` or ``"path"``.
@@ -311,6 +315,7 @@ class Evaluation:
             conf=conf,
             iou=iou,
             imgsz=imgsz,
+            batch=batch,
             device=device,
             image_name=image_name,
             **model_kwargs,
