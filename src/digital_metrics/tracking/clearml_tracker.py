@@ -49,6 +49,12 @@ _NAN_AWARE = ("ap50", "ap75", "ap50_95")
 # The confidence-interval PNGs get_dashboards writes into its output directory.
 _CI_PLOT_METRICS = ("recall", "precision", "perebrak", "nedobrak")
 
+# ClearML task statuses (clearml.Task.TaskStatusEnum). A task created via
+# ``Task.create`` starts as "created" (shown as "draft" in the UI) and only leaves
+# it once explicitly started; these two sets drive the status management below.
+_DRAFT_STATUSES = frozenset({"created", "draft"})
+_FINISHED_STATUSES = frozenset({"completed", "published", "closed", "failed", "stopped"})
+
 
 def _import_task() -> type[Task]:
     """Import ``clearml.Task`` lazily with an install hint on failure."""
@@ -97,6 +103,17 @@ class ClearMLTracker:
         with ClearMLTracker(project_name="detector", task_name="run-42") as tracker:
             evaluation("test", calibration_split="val")
             tracker.log_evaluation(evaluation)
+
+    Task lifecycle is handled so both entry points behave as expected:
+
+    * **``project_name`` / ``task_name``** — ClearML allows only one *main* task per
+      process, so a second ``Task.init`` with a different name would otherwise raise
+      ("task name does not match"). The tracker closes any still-open current task
+      first, so creating several trackers in one process just works.
+    * **injected ``task``** — a manually built task (e.g. ``Task.create``) starts in
+      the "created"/draft status and is *not* completed by ``Task.close`` (that only
+      finalises the main task). The tracker moves it to running on construction and
+      to completed on :meth:`close`, so an injected task's status tracks the run.
     """
 
     def __init__(
@@ -129,16 +146,31 @@ class ClearMLTracker:
         else:
             # Import ClearML only when we actually create a task; an injected task
             # (e.g. in tests) needs no extra installed.
-            self.task = _import_task().init(
+            task_cls = _import_task()
+            # Only one main task may exist per process: close any still-open current
+            # task so a second Task.init (e.g. a new task_name) does not raise.
+            current: Task | None = task_cls.current_task()
+            if current is not None:
+                logger.info("Closing the current ClearML task before starting a new one.")
+                current.close()
+            self.task = task_cls.init(
                 project_name=project_name,
                 task_name=task_name,
                 output_uri=output_uri,
                 **task_init_kwargs,
             )
+        # A freshly created (draft) task must be started so its status reflects the
+        # run; a Task.init task is already running, so this is a no-op there.
+        self._start_if_draft()
         self._logger: Logger = self.task.get_logger()
         self._sink_id: int | None = None
         if attach_logs:
             self.attach_loguru(level=log_level)
+
+    def _start_if_draft(self) -> None:
+        """Move a task still in the 'created'/draft status to running."""
+        if getattr(self.task, "status", None) in _DRAFT_STATUSES:
+            self.task.mark_started()
 
     # -- logging entry point --------------------------------------------------
 
@@ -297,8 +329,17 @@ class ClearMLTracker:
     # -- lifecycle ------------------------------------------------------------
 
     def close(self) -> None:
-        """Detach the loguru sink and close the ClearML task."""
+        """Detach the loguru sink and close the ClearML task.
+
+        ``Task.close`` only finalises the *main* task (the one ``Task.init``
+        created); a non-main task — e.g. an injected ``Task.create`` one — is left
+        in its current status. So for a non-main task we mark it completed first,
+        ensuring an injected task's status reflects the finished run.
+        """
         self.detach_loguru()
+        is_main = getattr(self.task, "is_main_task", lambda: True)()
+        if not is_main and getattr(self.task, "status", None) not in _FINISHED_STATUSES:
+            self.task.mark_completed()
         self.task.close()
 
     def __enter__(self) -> ClearMLTracker:

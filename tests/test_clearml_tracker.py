@@ -44,10 +44,19 @@ class _FakeLogger:
 
 
 class _FakeTask:
-    def __init__(self) -> None:
+    """Models a manually built (``Task.create``-style, non-main) task.
+
+    It starts in the "created"/draft status and, like the real non-main task,
+    ``close()`` does not complete it — only the tracker's explicit status handling
+    does. ``is_main`` can be flipped to model a ``Task.init`` main task.
+    """
+
+    def __init__(self, *, is_main: bool = False) -> None:
         self._logger = _FakeLogger()
         self.artifacts: dict[str, Any] = {}
         self.closed = False
+        self.status = "created"
+        self._is_main = is_main
 
     def get_logger(self) -> _FakeLogger:
         return self._logger
@@ -55,7 +64,20 @@ class _FakeTask:
     def upload_artifact(self, name: str, artifact_object: Any) -> None:
         self.artifacts[name] = artifact_object
 
+    def is_main_task(self) -> bool:
+        return self._is_main
+
+    def mark_started(self) -> None:
+        self.status = "in_progress"
+
+    def mark_completed(self, **_: Any) -> None:
+        self.status = "completed"
+
     def close(self) -> None:
+        # A real non-main task's status is unchanged by close(); a main task
+        # completes. Mirror that so tests catch missing explicit status handling.
+        if self._is_main and self.status not in {"completed", "failed", "stopped"}:
+            self.status = "completed"
         self.closed = True
 
 
@@ -106,6 +128,34 @@ def test_log_evaluation_dispatches_all_layers(tiny_dataset, tmp_path) -> None:
     }
     assert len(log.confusion_matrices) == 1
     assert not dtrk.empty
+
+
+def test_injected_draft_task_status_started_then_completed() -> None:
+    # A Task.create-style task arrives in "created"/draft: the tracker must start it
+    # and complete it on close (Bug: it stayed draft because close() ignores non-main).
+    task = _FakeTask()
+    assert task.status == "created"
+
+    tracker = ClearMLTracker(task=task, attach_logs=False)
+    assert task.status == "in_progress"  # started on construction
+
+    tracker.close()
+    assert task.status == "completed"  # explicitly completed for a non-main task
+    assert task.closed
+
+
+def test_injected_main_task_completed_by_close_not_double_marked() -> None:
+    # A Task.init main task is already running and is completed by close() itself;
+    # the tracker must not try to mark_completed a main task.
+    task = _FakeTask(is_main=True)
+    task.status = "in_progress"
+
+    tracker = ClearMLTracker(task=task, attach_logs=False)
+    assert task.status == "in_progress"  # not re-started
+
+    tracker.close()
+    assert task.status == "completed"
+    assert task.closed
 
 
 def test_loguru_sink_attaches_and_detaches() -> None:
