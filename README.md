@@ -463,8 +463,15 @@ automatically if they don't exist.
 # Top-k prediction/GT pairs confused between two classes
 audit_df = ev.get_topk_confusions(main_class="car", k=20)
 
-# DataFrames annotated with match type for visualisation
+# DataFrames annotated with match type for visualisation.
+# gt_df:    predict_type in {"TP", "FN"}
+# preds_df: predict_type in {"TP", "FP"}
 gt_vis, pred_vis = ev.get_dfs_visualization()
+
+# apply_thresholds=True folds the per-class best_confidences in (like
+# slice_by_conf): predictions below their class threshold become "filtered",
+# and a GT detected only by such a filtered prediction turns "FN".
+gt_vis, pred_vis = ev.get_dfs_visualization(apply_thresholds=True)
 ```
 
 ---

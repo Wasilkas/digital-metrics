@@ -572,7 +572,12 @@ All of the following must exist after any refactor:
 - `evaluation.get_dashboards(save_to_excel, path, save_confusion_matrix)`
 - `evaluation.plot_confidence_intervals(metric, confidence_level, save_path, figsize)`
 - `evaluation.get_topk_confusions(main_class, k)`
-- `evaluation.get_dfs_visualization()`
+- `evaluation.get_dfs_visualization(find_best_confs, apply_thresholds)` — returns
+  `(gt_df, preds_df)` each with a `predict_type` column (preds: `TP`/`FP`, GT:
+  `TP`/`FN`), annotated from `unfiltered_matches`. `apply_thresholds=True` folds the
+  per-class `best_confidences` in (mirroring `slice_by_conf`): predictions below
+  their class threshold become `filtered`, and a GT detected only by a filtered
+  prediction turns `FN`
 - `Metrics` fields: `tp, fp, fn, confidence, ap50, ap75, ap50_95, cohen_kappa,
   precision, recall, f1_score, perebrak, nedobrak, *_ci_lower, *_ci_upper`
   — `ap50/ap75/ap50_95` are `float | nan` (NaN when class absent from split)

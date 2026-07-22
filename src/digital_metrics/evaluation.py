@@ -593,15 +593,24 @@ class Evaluation:
         )
 
     def get_dfs_visualization(
-        self, *, find_best_confs: bool = True
+        self, *, find_best_confs: bool = True, apply_thresholds: bool = False
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Return GT and preds DataFrames annotated with prediction type.
 
         Args:
             find_best_confs: Whether to run confidence optimisation if not done yet.
+            apply_thresholds: When True, fold the per-class ``best_confidences``
+                thresholds into the annotation (mirroring ``slice_by_conf``):
+                predictions whose confidence is below their class threshold are
+                typed ``"filtered"`` instead of ``"TP"``/``"FP"``, and any GT box
+                whose only detection was such a filtered prediction becomes
+                ``"FN"``. When False (default) every prediction and GT box keeps
+                its raw pre-threshold match type.
 
         Returns:
-            (gt_df, preds_df) with a "predict_type" column.
+            (gt_df, preds_df) with a "predict_type" column. Prediction values are
+            ``"TP"``/``"FP"`` (plus ``"filtered"`` when ``apply_thresholds``);
+            GT values are ``"TP"``/``"FN"``.
         """
         if self.gt_df is None:
             logger.info("Ground-truth DataFrame not available; running evaluation.")
@@ -613,15 +622,22 @@ class Evaluation:
         # prediction and every GT box is classified). Predictions are keyed by
         # pred_index, GT boxes by gt_index; GT takes TP/FN only (a cross-class FP
         # also references a GT index, but that GT's own status is its TP/FN record).
+        # Records are grouped by the prediction's class (FNs by GT class), so the
+        # group name is the class whose best-confidence threshold applies.
         matches = self.unfiltered_matches or self._matches
+        thresholds = self._best_confidences if apply_thresholds else {}
         pred_type: dict[int, str] = {}
         gt_type: dict[int, str] = {}
-        for records in matches.values():
+        for class_name, records in matches.items():
+            threshold = thresholds.get(class_name, 0.0)
             for m in records:
+                filtered = m.pred_index != -1 and m.confidence < threshold
                 if m.pred_index != -1:
-                    pred_type[m.pred_index] = m.type
+                    pred_type[m.pred_index] = "filtered" if filtered else m.type
                 if m.gt_index != -1 and m.type in ("TP", "FN"):
-                    gt_type[m.gt_index] = m.type
+                    # A GT detected only by a below-threshold prediction goes
+                    # undetected once its class threshold is applied.
+                    gt_type[m.gt_index] = "FN" if (filtered and m.type == "TP") else m.type
 
         gt_df = self.gt_df.copy()
         preds_df = self.preds_df.copy()
