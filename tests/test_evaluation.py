@@ -142,6 +142,34 @@ def test_get_dfs_visualization(tiny_dataset: tuple[pd.DataFrame, pd.DataFrame]) 
     gt_vis, pred_vis = ev.get_dfs_visualization(find_best_confs=False)
     assert "predict_type" in gt_vis.columns
     assert "predict_type" in pred_vis.columns
+    # Without thresholds every prediction keeps its raw match type.
+    assert set(pred_vis["predict_type"]) <= {"TP", "FP"}
+
+
+def test_get_dfs_visualization_apply_thresholds(
+    tiny_dataset: tuple[pd.DataFrame, pd.DataFrame],
+) -> None:
+    gt_df, preds_df = tiny_dataset
+    ev = Evaluation(preds_df, gt_df)
+    ev(split="all", find_best_confs=False)
+
+    # Thresholds: class_a cut drops both low-conf FPs (0.30, 0.20); class_c cut
+    # of 0.70 filters the conf=0.60 TP so its GT box (class_c, img2) turns FN.
+    ev._best_confidences = {"class_a": 0.5, "class_b": 0.0, "class_c": 0.70}
+
+    _, pred_raw = ev.get_dfs_visualization(find_best_confs=False)
+    gt_vis, pred_vis = ev.get_dfs_visualization(find_best_confs=False, apply_thresholds=True)
+
+    # Predictions below their class threshold become "filtered".
+    filtered = pred_vis.loc[pred_vis["predict_type"] == "filtered"]
+    assert set(filtered["confidence"]) == {0.30, 0.20, 0.60}
+    # Predictions above threshold keep their raw type (unchanged from the no-op call).
+    kept = pred_vis["predict_type"] != "filtered"
+    assert (pred_vis.loc[kept, "predict_type"] == pred_raw.loc[kept, "predict_type"]).all()
+
+    # The class_c GT detected only by the filtered TP now reads FN.
+    class_c_gt = gt_vis.loc[gt_vis["instance_label"] == "class_c"]
+    assert (class_c_gt["predict_type"] == "FN").all()
 
 
 # ---------------------------------------------------------------------------

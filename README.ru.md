@@ -537,8 +537,15 @@ fig, ax = ev.plot_confidence_intervals(
 # Top-k пар предсказание/эталон, перепутанных между двумя классами
 audit_df = ev.get_topk_confusions(main_class="car", k=20)
 
-# DataFrame с разметкой типа сопоставления для визуализации
+# DataFrame с разметкой типа сопоставления для визуализации.
+# gt_df:    predict_type ∈ {"TP", "FN"}
+# preds_df: predict_type ∈ {"TP", "FP"}
 gt_vis, pred_vis = ev.get_dfs_visualization()
+
+# apply_thresholds=True применяет пороги best_confidences по классам (как
+# slice_by_conf): предсказания ниже порога своего класса становятся "filtered",
+# а эталон, обнаруженный только таким отфильтрованным предсказанием, — "FN".
+gt_vis, pred_vis = ev.get_dfs_visualization(apply_thresholds=True)
 ```
 
 ---
