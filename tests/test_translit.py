@@ -160,3 +160,24 @@ def test_restoration_is_idempotent() -> None:
     first = evaluation.preds_df["instance_label"].tolist()
     evaluation("test")
     assert evaluation.preds_df["instance_label"].tolist() == first
+
+
+def test_restore_labels_ignores_non_string_gt_labels() -> None:
+    # Empty images carry a placeholder GT row with a NaN label.
+    mapping = restore_labels(["Gryaz_na_osnove", float("nan")], [*GT_LABELS, float("nan")])
+    assert mapping == {"Gryaz_na_osnove": "Грязь на основе"}
+
+
+def test_evaluation_with_empty_image_gt_rows() -> None:
+    gt_df, preds_df = _cyrillic_dataset()
+    empty_image = pd.DataFrame(
+        [("img2", None, None, None, None, None, "test")], columns=gt_df.columns
+    )
+    gt_df = pd.concat([gt_df, empty_image], ignore_index=True)
+    evaluation = Evaluation(preds_df, gt_df, iou_threshold=0.5, transliterated_labels=True)
+    evaluation("test")
+    assert evaluation.classes == ["Грязь на основе", "ВкатЛО"]
+    assert {label: m.tp for label, m in evaluation.metrics.items()} == {
+        "Грязь на основе": 1,
+        "ВкатЛО": 1,
+    }

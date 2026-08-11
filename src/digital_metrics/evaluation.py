@@ -184,8 +184,10 @@ class Evaluation:
 
         self.iou_threshold = scoring.iou_threshold
         # Defer KeyError: validate_dataframes raises ValueError with a clear message if missing.
+        # Empty images carry a placeholder GT row with a NA label purely to keep the
+        # image in scope (see match_boxes); it names no class, so drop it here.
         self.classes: list[str] = (
-            self.split_df["instance_label"].unique().tolist()
+            self.split_df["instance_label"].dropna().unique().tolist()
             if "instance_label" in self.split_df.columns
             else []
         )

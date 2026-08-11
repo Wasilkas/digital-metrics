@@ -175,7 +175,9 @@ def compute_map(
     split_images = _resolve_split_images(gt_df, split_image_names)
     preds_df = preds_df[preds_df["image_name"].isin(split_images)]
 
-    classes_in_split = set(gt_df["instance_label"].unique().tolist())
+    # dropna: empty images carry a placeholder GT row with a NA label, which
+    # names no class (and is unsortable against the real, string labels).
+    classes_in_split = set(gt_df["instance_label"].dropna().unique().tolist())
     classes = sorted(classes_in_split)
     npos_by_class = gt_df.groupby("instance_label").size().to_dict()
 
