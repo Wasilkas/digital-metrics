@@ -113,12 +113,18 @@ def normalize_label(text: str) -> str:
     return "".join(char for char in text.lower() if char.isalnum())
 
 
+def _strings(labels: Iterable[object]) -> list[str]:
+    """Keep only the string labels; ``NaN``/``None`` placeholders are not classes."""
+    return [label for label in labels if isinstance(label, str)]
+
+
 def build_translit_index(gt_labels: Iterable[str]) -> dict[str, str]:
     """Index the ground-truth vocabulary by every normalised spelling of it.
 
     Each label contributes its own normalised form plus one per scheme in
     :data:`TRANSLIT_SCHEMES`. Keys claimed by two different labels are dropped
-    (with a warning) rather than resolved arbitrarily.
+    (with a warning) rather than resolved arbitrarily. Non-string entries (the
+    ``NaN`` label of an empty-image placeholder row) are skipped.
 
     Args:
         gt_labels: Ground-truth class names.
@@ -128,7 +134,7 @@ def build_translit_index(gt_labels: Iterable[str]) -> dict[str, str]:
     """
     index: dict[str, str] = {}
     ambiguous: set[str] = set()
-    for label in gt_labels:
+    for label in _strings(gt_labels):
         # ``ё``/``е`` are used interchangeably in practice, on both sides of the
         # conversion, so index the folded spelling as well.
         spellings = {label, label.replace("ё", "е").replace("Ё", "Е")}
@@ -165,7 +171,8 @@ def restore_labels(
     normalised form is looked up among the normalised transliterations of the
     ground-truth labels, then — if that misses — matched fuzzily against the same
     keys. Labels with no match at or above ``cutoff`` are reported in a single
-    warning and map to themselves.
+    warning and map to themselves. Non-string entries on either side (the
+    ``NaN`` label of an empty-image placeholder row) are ignored.
 
     Args:
         labels: Model / prediction class names to restore.
@@ -182,14 +189,14 @@ def restore_labels(
     if not 0 < cutoff <= 1:
         raise ValueError(f"cutoff must be in (0, 1], got {cutoff}.")
 
-    known = list(dict.fromkeys(gt_labels))
+    known = list(dict.fromkeys(_strings(gt_labels)))
     known_set = set(known)
     index = build_translit_index(known)
     keys = list(index)
 
     mapping: dict[str, str] = {}
     unresolved: list[str] = []
-    for label in dict.fromkeys(labels):
+    for label in dict.fromkeys(_strings(labels)):
         if label in known_set:
             mapping[label] = label
             continue
