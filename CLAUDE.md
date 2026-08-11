@@ -97,6 +97,7 @@ src/
     types.py          # Pydantic models: PredictMatch, Metrics, DetectionMetrics
     ci.py             # Wilson confidence interval (foundation; types depends on it)
     validation.py     # validate_dataframes: shared GT/preds column + label checks
+    translit.py       # Cyrillic→Latin schemes + restore_labels: map transliterated model labels onto the GT vocabulary
     grouping.py       # image_row_indices: per-image positional row grouping (perf helper, shared)
     config.py         # ScoringConfig/PreprocessConfig/InferenceConfig (optional grouped Evaluation args)
     evaluation.py     # Evaluation orchestrator: data/IO + dispatch to a scoring engine
@@ -156,6 +157,7 @@ tests/
   test_torchmetrics_metrics.py # optional; skipped unless `torchmetrics` is installed
   test_torchmetrics_calibration.py # torch-free curve helpers + optional when-installed calibration
   test_yolo_predict.py         # predict_to_dataframe: torch-free helpers, image_path/ImportError guards
+  test_translit.py             # transliterate/normalize/index/restore_labels + Evaluation wiring (zero-metrics without the flag, perfect with it)
   test_clearml_tracker.py      # ClearMLTracker: summarize_metrics nanmean + scalar/artifact/plot/loguru dispatch via fake Task (torch/clearml-free)
 scripts/
   eval.py             # local evaluation script (see "Local Evaluation" section)
@@ -495,7 +497,8 @@ All of the following must exist after any refactor:
 - `Evaluation(preds_df, split_df, iou_threshold, preprocess, skip_cohen_kappa,
   matching_strategy, preprocess_preds_conf_threshold,
   preprocess_preds_nms_containment_threshold, preprocess_preds_nms_iou_threshold,
-  ap_method, confidence_optimization, weights_path, backend, predict_kwargs)` —
+  ap_method, confidence_optimization, weights_path, backend, predict_kwargs,
+  transliterated_labels, translit_match_cutoff)` —
   `preds_df` may be `None` (an empty placeholder is created) to predict first;
   `weights_path` is an optional YOLO weights path. `backend` (`None` = native;
   `"ultralytics"` / `"torchmetrics"`) makes `Evaluation` the single entry point:
@@ -551,6 +554,20 @@ All of the following must exist after any refactor:
   label and its prediction count) and drops those rows from both `preds_df` and
   `_raw_preds_df` before scoring — applies uniformly to the native and both backend
   paths. `validate_dataframes` itself only checks columns + NA confidence
+- `transliterated_labels=True` (+ `translit_match_cutoff`, default `0.8`) —
+  handles models trained on a transliterated conversion of the dataset
+  (`"Грязь на основе"` → `"Gryaz_na_osnove"`), which would otherwise score all
+  zeros. `Evaluation._restore_transliterated_labels` runs before
+  `_drop_unknown_pred_classes` (native *and* backend paths) and rewrites the
+  labels in both `preds_df` and `_raw_preds_df`. Reverse transliteration is
+  ambiguous, so matching goes forward off the GT: `translit.py` transliterates
+  each GT label with three schemes (`common`/`gost`/`icao`, plus a `ё`→`е` fold),
+  normalises (lower-case, non-alphanumerics dropped) and indexes them; a pred
+  label hits by exact key, then by `difflib` fuzzy match at the cutoff; no close
+  match → warning listing the labels, left unchanged. Verified round-trip on all
+  49 fixture classes × 3 schemes × 3 separator styles. Public helpers exported
+  from `metrics`: `transliterate(text, scheme)`, `restore_labels(labels,
+  gt_labels, cutoff)`, `TRANSLIT_SCHEMES`
 - `evaluation.compute_metrics_ultralytics(split)` /
   `evaluation.compute_metrics_torchmetrics(split)` — score `split` with that
   external backend over `_raw_preds_df` and return `dict[str, DetectionMetrics]`
