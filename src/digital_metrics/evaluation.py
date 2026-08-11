@@ -19,6 +19,7 @@ from .matching import MatchingStrategy, compute_iou_matrix, find_duplicates_bbox
 from .preprocess import PredictionPreprocessor
 from .reporting import get_dashboards, plot_confidence_intervals
 from .scoring import APMethod, ConfidenceOptimization, get_confusions
+from .translit import restore_labels
 from .types import DetectionMetrics, Metrics, PredictMatch
 from .validation import REQUIRED_COLS_PREDS, validate_dataframes
 
@@ -43,6 +44,8 @@ class Evaluation:
         weights_path: str | None = None,
         backend: Backend | None = None,
         predict_kwargs: dict[str, Any] | None = None,
+        transliterated_labels: bool = False,
+        translit_match_cutoff: float = 0.8,
         scoring: ScoringConfig | None = None,
         preprocessing: PreprocessConfig | None = None,
         inference: InferenceConfig | None = None,
@@ -106,6 +109,19 @@ class Evaluation:
                 True, "augment": True}``). Ignored when ``preds_df`` is provided.
                 For one-off control you can instead call
                 :meth:`predict_to_dataframe` with the same keyword arguments.
+            transliterated_labels: Set to ``True`` when the model predicts
+                transliterated class names (e.g. ``"Gryaz_na_osnove"`` for the
+                ground-truth ``"Грязь на основе"``, as produced by dataset
+                converters). Before scoring, prediction labels are matched back
+                onto the ground-truth vocabulary by transliterating the GT labels
+                with several common schemes and comparing normalised spellings
+                (case, spaces, underscores and hyphens ignored), with a fuzzy
+                fallback. Labels with no close enough match are logged in a
+                warning and left unchanged (so they are then dropped as unknown
+                classes). No-op when ``False`` (default).
+            translit_match_cutoff: Minimum similarity (0–1] for the fuzzy
+                fallback of the label restoration above. Higher is stricter;
+                defaults to ``0.8``.
             scoring: Optional :class:`~metrics.config.ScoringConfig` grouping
                 ``iou_threshold`` / ``matching_strategy`` / ``ap_method`` /
                 ``confidence_optimization`` / ``skip_cohen_kappa``. When given it
@@ -185,6 +201,8 @@ class Evaluation:
         self._confidence_optimization: ConfidenceOptimization = scoring.confidence_optimization
         self._backend: Backend | None = backend
         self._predict_kwargs: dict[str, Any] = inference.predict_kwargs or {}
+        self._transliterated_labels = transliterated_labels
+        self._translit_match_cutoff = translit_match_cutoff
         self._calibrator = ConfidenceCalibrator(
             classes=self.classes,
             iou_threshold=self.iou_threshold,
@@ -358,6 +376,29 @@ class Evaluation:
             deepcopy(self.split_df) if split == "all" else self.split_df.query("split == @split")
         )
 
+    def _restore_transliterated_labels(self) -> None:
+        """Map transliterated prediction labels back onto the GT vocabulary.
+
+        Enabled by ``transliterated_labels=True``. Ground-truth labels are
+        transliterated with the schemes in :mod:`metrics.translit` and indexed by
+        normalised spelling; each prediction label absent from the GT vocabulary
+        is resolved against that index (exact key first, then fuzzy at
+        ``translit_match_cutoff``). Unresolved labels stay as they are and are
+        reported in a warning — ``_drop_unknown_pred_classes`` then removes them.
+        Idempotent: restored labels are GT labels, so a second run is a no-op.
+        """
+        if not self._transliterated_labels or not self.classes:
+            return
+        labels = self._raw_preds_df["instance_label"].dropna().unique().tolist()
+        if not labels:
+            return
+        mapping = restore_labels(labels, self.classes, cutoff=self._translit_match_cutoff)
+        changed = {src: dst for src, dst in mapping.items() if src != dst}
+        if not changed:
+            return
+        self._raw_preds_df["instance_label"] = self._raw_preds_df["instance_label"].replace(changed)
+        self.preds_df["instance_label"] = self.preds_df["instance_label"].replace(changed)
+
     def _drop_unknown_pred_classes(self) -> None:
         """Warn about and drop predictions whose label is absent from the GT vocabulary.
 
@@ -436,6 +477,7 @@ class Evaluation:
         self._ensure_predictions(self._splits_to_predict(split, calibration_split))
         self._define_gt(split)
         assert self.gt_df is not None
+        self._restore_transliterated_labels()
         self._drop_unknown_pred_classes()
 
         result = self._engine.run(
@@ -480,6 +522,7 @@ class Evaluation:
         self._ensure_predictions(self._splits_to_predict(split, None))
         self._define_gt(split)
         assert self.gt_df is not None
+        self._restore_transliterated_labels()
         self._drop_unknown_pred_classes()
         # Backends score the raw predictions (YOLO val style); no conf/NMS preprocessing.
         validate_dataframes(self._raw_preds_df, self.gt_df)

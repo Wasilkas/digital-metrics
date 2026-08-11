@@ -13,6 +13,7 @@ from .evaluation import Evaluation
 from .matching import MatchingStrategy
 from .scoring import APMethod, ConfidenceOptimization
 from .tracking import ClearMLTracker, summarize_metrics
+from .translit import TRANSLIT_SCHEMES, restore_labels, transliterate
 from .types import DetectionMetrics, Metrics, PredictMatch
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "Metrics",
     "PredictMatch",
     "PreprocessConfig",
+    "TRANSLIT_SCHEMES",
     "ScoringConfig",
     "YoloMetrics",
     "compute_detection_metrics",
@@ -35,5 +37,7 @@ __all__ = [
     "compute_ultralytics_metrics",
     "find_torchmetrics_confidence",
     "find_ultralytics_confidence",
+    "restore_labels",
     "summarize_metrics",
+    "transliterate",
 ]
