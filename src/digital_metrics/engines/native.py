@@ -130,8 +130,10 @@ class NativeEngine:
                 "or keep skip_cohen_kappa=True."
             )
 
+        # dropna: empty images carry a placeholder GT row with a NA label that
+        # names no class, so it has no Metrics entry to write the kappa into.
         for c in tqdm(
-            gt_df["instance_label"].unique(),
+            gt_df["instance_label"].dropna().unique(),
             desc="Computing Cohen's Kappa",
             total=gt_df["instance_label"].nunique(),
         ):
