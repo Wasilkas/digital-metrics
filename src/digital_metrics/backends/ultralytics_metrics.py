@@ -39,6 +39,7 @@ import pandas as pd
 
 from ..grouping import image_row_indices
 from ..types import DetectionMetrics
+from ..validation import drop_na_labels
 
 # Backward-compatible alias: the YOLO-exact path historically returned its own
 # ``YoloMetrics`` model. It now shares the common :class:`DetectionMetrics`
@@ -131,14 +132,19 @@ def _ap_per_class_results(
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(_INSTALL_HINT) from exc
 
+    # Scope the images first, then drop the NA-label placeholder rows empty
+    # images carry: the image stays in scope, but the row names no class.
+    images: set[str] = set(gt_df["image_name"].unique())
+    if split_image_names is not None:
+        images |= set(split_image_names)
+    gt_df = drop_na_labels(gt_df)
+    preds_df = drop_na_labels(preds_df)
+
     if classes is None:
         classes = sorted(set(gt_df["instance_label"]) | set(preds_df["instance_label"]))
     class_to_idx = {c: i for i, c in enumerate(classes)}
     idx_to_class = {i: c for c, i in class_to_idx.items()}
 
-    images: set[str] = set(gt_df["image_name"].unique())
-    if split_image_names is not None:
-        images |= set(split_image_names)
     scoped_preds = preds_df[preds_df["image_name"].isin(images)]
 
     # Map labels and extract boxes/conf to numpy once over the whole frame,
@@ -408,6 +414,14 @@ def compute_ultralytics_confusion_matrix(
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(_INSTALL_HINT) from exc
 
+    # Scope the images first, then drop the NA-label placeholder rows empty
+    # images carry: the image stays in scope, but the row names no class.
+    images: set[str] = set(gt_df["image_name"].unique())
+    if split_image_names is not None:
+        images |= set(split_image_names)
+    gt_df = drop_na_labels(gt_df)
+    preds_df = drop_na_labels(preds_df)
+
     if classes is None:
         classes = sorted(set(gt_df["instance_label"]) | set(preds_df["instance_label"]))
     class_to_idx = {c: i for i, c in enumerate(classes)}
@@ -415,9 +429,6 @@ def compute_ultralytics_confusion_matrix(
     # Ultralytics bumps the YOLO-val sentinel 0.001 up to 0.25 for the matrix.
     conf = _CM_CONF if conf in (None, 0.001) else conf
 
-    images: set[str] = set(gt_df["image_name"].unique())
-    if split_image_names is not None:
-        images |= set(split_image_names)
     scoped_preds = preds_df[preds_df["image_name"].isin(images)]
 
     # Whole-frame numpy extraction once; per image slice by positional index.

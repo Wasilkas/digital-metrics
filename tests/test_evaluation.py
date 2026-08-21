@@ -335,3 +335,35 @@ def test_both_preds_and_weights_warns_at_init(
         lambda: Evaluation(preds_df, gt_df, iou_threshold=0.5, weights_path="best.pt")
     )
     assert any("ignoring weights_path" in m for m in msgs)
+
+
+# ---------------------------------------------------------------------------
+# Empty images: placeholder GT row with a NA label
+# ---------------------------------------------------------------------------
+
+
+def test_empty_image_gt_row_with_cohen_kappa() -> None:
+    """A NA-label placeholder row must not reach the kappa loop.
+
+    It has no ``Metrics`` entry (it names no class), so writing a kappa for it
+    used to raise ``KeyError: nan``.
+    """
+    gt_df = pd.DataFrame(
+        [
+            ("i1", "a", 0, 0, 10, 10, "test", 100, 100),
+            ("i2", None, None, None, None, None, "test", 100, 100),
+        ],
+        columns=[*_GT_COLS, "image_width", "image_height"],
+    )
+    preds_df = pd.DataFrame(
+        [("i1", "a", 0, 0, 10, 10, 0.9), ("i2", "a", 0, 0, 10, 10, 0.5)],
+        columns=_PRED_COLS,
+    )
+    ev = Evaluation(preds_df, gt_df, iou_threshold=0.5, skip_cohen_kappa=False)
+    ev(split="test", find_best_confs=False)
+
+    assert set(ev.metrics.keys()) == {"a"}
+    assert ev.metrics["a"].tp == 1
+    assert ev.metrics["a"].fp == 1  # prediction on the empty image
+    assert ev.metrics["a"].cohen_kappa != -1.0
+    assert ev.metrics["a"].ap50 >= 0.0

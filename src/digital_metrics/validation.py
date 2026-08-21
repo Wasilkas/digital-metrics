@@ -28,6 +28,24 @@ REQUIRED_COLS_PREDS = {
 }
 
 
+def drop_na_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows whose ``instance_label`` is ``NA``.
+
+    Empty images carry a placeholder ground-truth row with a ``NA`` label purely
+    to keep the image in scope. It names no class, so it must not reach code that
+    sorts, indexes or maps labels. Scope the image set *before* calling this.
+
+    Args:
+        df: Ground-truth or predictions DataFrame.
+
+    Returns:
+        The DataFrame without the ``NA``-label rows (the original object when
+        there are none).
+    """
+    mask = df["instance_label"].notna()
+    return df if bool(mask.all()) else df[mask]
+
+
 def validate_dataframes(preds_df: pd.DataFrame, gt_df: pd.DataFrame) -> None:
     """Validate the prediction and ground-truth DataFrames before scoring.
 

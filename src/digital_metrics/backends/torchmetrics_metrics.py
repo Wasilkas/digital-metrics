@@ -44,6 +44,7 @@ import pandas as pd
 
 from ..grouping import image_row_indices
 from ..types import DetectionMetrics
+from ..validation import drop_na_labels
 
 _BBOX_COLS = ["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
 # Ten IoU thresholds, exactly as COCO / Ultralytics val (linspace(0.5, 0.95, 10)).
@@ -185,14 +186,19 @@ def _torchmetrics_eval(
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(_INSTALL_HINT) from exc
 
+    # Scope the images first, then drop the NA-label placeholder rows empty
+    # images carry: the image stays in scope, but the row names no class.
+    images: set[str] = set(gt_df["image_name"].unique())
+    if split_image_names is not None:
+        images |= set(split_image_names)
+    gt_df = drop_na_labels(gt_df)
+    preds_df = drop_na_labels(preds_df)
+
     if classes is None:
         classes = sorted(set(gt_df["instance_label"]) | set(preds_df["instance_label"]))
     class_to_idx = {c: i for i, c in enumerate(classes)}
     idx_to_class = {i: c for c, i in class_to_idx.items()}
 
-    images: set[str] = set(gt_df["image_name"].unique())
-    if split_image_names is not None:
-        images |= set(split_image_names)
     scoped_preds = preds_df[preds_df["image_name"].isin(images)]
 
     # Map labels and extract boxes/conf to numpy once over the whole frame,
