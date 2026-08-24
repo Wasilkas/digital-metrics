@@ -13,6 +13,7 @@ so the core install stays torch-free.
 
 from __future__ import annotations
 
+import gc
 from pathlib import Path
 from typing import Any, Literal
 
@@ -77,6 +78,44 @@ def _detection_rows(
     return rows
 
 
+def _release_gpu_memory(model: Any) -> None:
+    """Drop a finished YOLO model's GPU tensors and return cached VRAM to the driver.
+
+    Two things keep video memory occupied once inference is done: Ultralytics'
+    predictor, which holds the last batch's tensors (``results``/``im``/``im0s``)
+    and the model weights, and PyTorch's caching allocator, which keeps freed
+    blocks reserved for the process — so ``nvidia-smi`` still shows the run's peak
+    long after ``predict`` returned. This moves the model off the GPU, drops the
+    predictor, then empties the allocator cache.
+
+    Torch is imported lazily and a missing/CPU-only install is a no-op, so the
+    helper is safe to call unconditionally.
+
+    Args:
+        model: The Ultralytics ``YOLO`` object that ran the inference.
+    """
+    predictor = getattr(model, "predictor", None)
+    if predictor is not None:
+        for attr in ("results", "batch", "im", "im0s"):
+            if hasattr(predictor, attr):
+                setattr(predictor, attr, None)
+        model.predictor = None
+    try:
+        model.to("cpu")  # release the weights' VRAM even if the caller keeps the model
+    except Exception:  # pragma: no cover - defensive: a stub/CPU model may not support it
+        logger.debug("Could not move the model to CPU while freeing GPU memory.")
+
+    gc.collect()
+    try:
+        import torch
+    except ImportError:  # pragma: no cover - exercised only without the extra
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        logger.debug("Released cached GPU memory after inference.")
+
+
 def predict_on_images(
     weights: str | Path,
     image_paths: list[str],
@@ -99,6 +138,10 @@ def predict_on_images(
     ``batch`` images regardless of how many are scored. ``batch`` is therefore the
     knob to turn when a run runs out of GPU memory (together with ``imgsz`` and
     ``half=True``).
+
+    When the run finishes (or raises) the GPU is released: the predictor's retained
+    tensors are dropped, the model is moved back to CPU and PyTorch's allocator
+    cache is emptied, so the run's peak VRAM does not stay reserved afterwards.
 
     Args:
         weights: Path to Ultralytics model weights (``.pt``).
@@ -146,38 +189,44 @@ def predict_on_images(
 
     rows: list[dict[str, Any]] = []
     n_images = 0
-    # Chunk the source list: peak VRAM stays bounded to ``batch`` images because
-    # each ``predict`` call releases its retained tensors when it finishes.
-    for start in range(0, len(paths), batch):
-        chunk = paths[start : start + batch]
-        results = model.predict(
-            source=chunk,
-            stream=True,
-            conf=conf,
-            iou=iou,
-            imgsz=imgsz,
-            device=device,
-            verbose=False,
-            **model_kwargs,
-        )
-        # Ultralytics yields results in input order but rewrites ``r.path`` to
-        # generic names for a list source, so name from the original path instead
-        # (strict zip surfaces any count mismatch rather than silently misalign).
-        for path, r in zip(chunk, results, strict=True):
-            n_images += 1
-            boxes = r.boxes
-            if boxes is None or len(boxes) == 0:
-                continue
-            rows.extend(
-                _detection_rows(
-                    path,
-                    boxes.xyxy.cpu().numpy(),
-                    boxes.conf.cpu().numpy(),
-                    boxes.cls.cpu().numpy(),
-                    names,
-                    image_name,
-                )
+    try:
+        # Chunk the source list: peak VRAM stays bounded to ``batch`` images because
+        # each ``predict`` call releases its retained tensors when it finishes.
+        for start in range(0, len(paths), batch):
+            chunk = paths[start : start + batch]
+            results = model.predict(
+                source=chunk,
+                stream=True,
+                conf=conf,
+                iou=iou,
+                imgsz=imgsz,
+                device=device,
+                verbose=False,
+                **model_kwargs,
             )
+            # Ultralytics yields results in input order but rewrites ``r.path`` to
+            # generic names for a list source, so name from the original path instead
+            # (strict zip surfaces any count mismatch rather than silently misalign).
+            for path, r in zip(chunk, results, strict=True):
+                n_images += 1
+                boxes = r.boxes
+                if boxes is None or len(boxes) == 0:
+                    continue
+                rows.extend(
+                    _detection_rows(
+                        path,
+                        boxes.xyxy.cpu().numpy(),
+                        boxes.conf.cpu().numpy(),
+                        boxes.cls.cpu().numpy(),
+                        names,
+                        image_name,
+                    )
+                )
+    finally:
+        # Detections are already numpy by now, so nothing here needs the GPU: free
+        # it before returning (also on an error/OOM path) instead of leaving the
+        # run's peak reserved for the rest of the process's life.
+        _release_gpu_memory(model)
 
     logger.info(f"Predicted {len(rows)} boxes over {n_images} images.")
     return pd.DataFrame(rows, columns=_PRED_COLUMNS)
