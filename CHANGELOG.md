@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-08-24
+
+### Fixed
+
+- GPU memory is released once YOLO inference finishes. Ultralytics' predictor
+  held the last batch's tensors and the weights on the device, and PyTorch's
+  caching allocator kept the freed blocks reserved for the process, so a run's
+  peak VRAM (tens of GB on large sets) stayed occupied long after
+  `predict_to_dataframe` returned. `predict_on_images` now drops the predictor,
+  moves the model back to CPU and empties the allocator cache in a `finally`
+  block, so the memory is returned on the error/OOM path too.
+
 ### Changed
 
 - Documentation split out of the two READMEs into `docs/` (EN + RU), with the

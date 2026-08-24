@@ -220,3 +220,74 @@ def test_predict_kwargs_forwarded_to_model(monkeypatch: pytest.MonkeyPatch) -> N
     assert captured["imgsz"] == 1280  # named param, threaded through
     assert captured["half"] is True  # extra model kwarg
     assert captured["augment"] is True
+
+
+class _FakePredictor:
+    """Stand-in for Ultralytics' predictor, holding "GPU" tensors after a run."""
+
+    def __init__(self) -> None:
+        self.results = ["tensor"]
+        self.batch = ["tensor"]
+        self.im = "tensor"
+        self.im0s = "tensor"
+
+
+class _FakeModel:
+    """Minimal YOLO stand-in recording the cleanup calls made against it."""
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.names = {0: "class_a"}
+        self.predictor: _FakePredictor | None = _FakePredictor()
+        self.moved_to: str | None = None
+
+    def to(self, device: str) -> "_FakeModel":
+        self.moved_to = device
+        return self
+
+    def predict(self, **_kwargs: object) -> list[object]:
+        raise RuntimeError("CUDA out of memory")
+
+
+def test_release_gpu_memory_drops_predictor_and_offloads() -> None:
+    from digital_metrics.inference.yolo_predict import _release_gpu_memory
+
+    model = _FakeModel()
+    predictor = model.predictor
+    assert predictor is not None
+
+    _release_gpu_memory(model)
+
+    assert model.predictor is None  # predictor's retained tensors are dropped
+    assert (predictor.results, predictor.batch, predictor.im, predictor.im0s) == (
+        None,
+        None,
+        None,
+        None,
+    )
+    assert model.moved_to == "cpu"  # weights no longer occupy VRAM
+
+
+def test_predict_on_images_releases_gpu_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An OOM (or any failure) mid-run must still free the GPU on the way out.
+    import sys
+    import types
+
+    from digital_metrics.inference import yolo_predict
+
+    models: list[_FakeModel] = []
+
+    def make_model(*args: object, **kwargs: object) -> _FakeModel:
+        model = _FakeModel(*args, **kwargs)
+        models.append(model)
+        return model
+
+    fake_ultralytics = types.ModuleType("ultralytics")
+    fake_ultralytics.YOLO = make_model  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ultralytics", fake_ultralytics)
+
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        yolo_predict.predict_on_images("weights.pt", ["/imgs/a.jpg"])
+
+    assert len(models) == 1
+    assert models[0].predictor is None
+    assert models[0].moved_to == "cpu"

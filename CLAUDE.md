@@ -545,7 +545,10 @@ All of the following must exist after any refactor:
   Ultralytics' predictor retains per-image GPU tensors for the whole call. Lower
   `batch` (and/or `imgsz`, or set `half=True`) to fit a smaller card; the
   Ultralytics `batch` predict kwarg itself is a no-op in streaming mode, so this
-  chunk size is the real knob. `batch` also flows through `predict_kwargs`.
+  chunk size is the real knob. `batch` also flows through `predict_kwargs`. When a run
+  finishes (or raises), `_release_gpu_memory` drops the predictor's retained
+  tensors, moves the model back to CPU and calls `torch.cuda.empty_cache()` /
+  `ipc_collect()`, so the run's peak VRAM is not left reserved by the process.
 - Input validation (raises `ValueError`): missing required columns, `NA` in the
   predictions `confidence` column, and val/test calibration splits that share an
   `image_name`. Prediction labels absent from the GT class vocabulary are **not**
