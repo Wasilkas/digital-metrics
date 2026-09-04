@@ -6,13 +6,33 @@ the corresponding optional extra (``ultralytics`` / ``torchmetrics``) is present
 
 import importlib.util
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from digital_metrics import DetectionMetrics, compute_detection_metrics
+from digital_metrics.backends.ultralytics_metrics import _confusion_process_batch
 from digital_metrics.validation import drop_na_labels
 
 _BACKENDS = ["ultralytics", "torchmetrics"]
+
+
+def test_ultralytics_confusion_counts_fp_when_there_are_no_matches() -> None:
+    """Non-overlapping predictions remain FPs even when no match exists."""
+    matrix = np.zeros((3, 3), dtype=np.int64)
+
+    _confusion_process_batch(
+        matrix,
+        det_classes=np.array([1]),
+        gt_classes=np.array([0]),
+        iou=np.array([[0.0]]),
+        iou_thres=0.45,
+        nc=2,
+    )
+
+    assert matrix[2, 0] == 1  # unmatched GT -> FN
+    assert matrix[1, 2] == 1  # unmatched detection -> FP
+    assert matrix.sum() == 2
 
 
 def test_unknown_backend_raises_value_error(
