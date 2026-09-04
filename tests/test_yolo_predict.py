@@ -181,6 +181,107 @@ def test_auto_predict_targets_eval_and_calibration_splits(
     assert set(captured["paths"]) == {"/imgs/val1.jpg", "/imgs/test1.jpg"}
 
 
+def test_auto_predict_fills_missing_splits_without_repeating_inference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reusable weights-backed Evaluation predicts each image at most once."""
+    import digital_metrics.evaluation as evaluation_module
+
+    gt_df = pd.DataFrame(
+        [
+            ("val.jpg", "cat", 0, 0, 10, 10, "val", "/imgs/val.jpg"),
+            ("test.jpg", "cat", 0, 0, 10, 10, "test", "/imgs/test.jpg"),
+        ],
+        columns=[
+            "image_name",
+            "instance_label",
+            "bbox_x_tl",
+            "bbox_y_tl",
+            "bbox_x_br",
+            "bbox_y_br",
+            "split",
+            "image_path",
+        ],
+    )
+    calls: list[list[str]] = []
+
+    def fake_predict_on_images(
+        weights: str, image_paths: list[str], **_: object
+    ) -> pd.DataFrame:
+        calls.append(list(image_paths))
+        return pd.DataFrame(
+            [
+                {
+                    "image_name": path.rsplit("/", 1)[-1],
+                    "instance_label": "cat",
+                    "confidence": 0.9,
+                    "bbox_x_tl": 0,
+                    "bbox_y_tl": 0,
+                    "bbox_x_br": 10,
+                    "bbox_y_br": 10,
+                }
+                for path in image_paths
+            ]
+        )
+
+    monkeypatch.setattr(evaluation_module, "predict_on_images", fake_predict_on_images)
+
+    ev = Evaluation(None, gt_df, weights_path="weights.pt")
+    ev("val", find_best_confs=False)
+    assert ev.metrics["cat"].tp == 1
+
+    ev("test", find_best_confs=False)
+    assert ev.metrics["cat"].tp == 1
+    assert ev.metrics["cat"].fn == 0
+
+    ev("test", find_best_confs=False)
+    ev("all", find_best_confs=False)
+    assert calls == [["/imgs/val.jpg"], ["/imgs/test.jpg"]]
+    assert set(ev.preds_df["image_name"]) == {"val.jpg", "test.jpg"}
+
+
+def test_auto_predict_extends_calibration_union_without_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import digital_metrics.evaluation as evaluation_module
+
+    gt_df = pd.DataFrame(
+        [
+            ("val.jpg", "cat", 0, 0, 10, 10, "val", "/imgs/val.jpg"),
+            ("test.jpg", "cat", 0, 0, 10, 10, "test", "/imgs/test.jpg"),
+            ("train.jpg", "cat", 0, 0, 10, 10, "train", "/imgs/train.jpg"),
+        ],
+        columns=[
+            "image_name",
+            "instance_label",
+            "bbox_x_tl",
+            "bbox_y_tl",
+            "bbox_x_br",
+            "bbox_y_br",
+            "split",
+            "image_path",
+        ],
+    )
+    calls: list[list[str]] = []
+
+    def fake_predict_on_images(
+        weights: str, image_paths: list[str], **_: object
+    ) -> pd.DataFrame:
+        calls.append(list(image_paths))
+        return pd.DataFrame(columns=_PRED_COLUMNS)
+
+    monkeypatch.setattr(evaluation_module, "predict_on_images", fake_predict_on_images)
+
+    ev = Evaluation(None, gt_df, weights_path="weights.pt")
+    ev("test", calibration_split="val")
+    ev("train", calibration_split="val")
+
+    assert calls == [
+        ["/imgs/val.jpg", "/imgs/test.jpg"],
+        ["/imgs/train.jpg"],
+    ]
+
+
 def test_predict_kwargs_forwarded_to_model(monkeypatch: pytest.MonkeyPatch) -> None:
     # predict_kwargs on the constructor must reach Ultralytics' model.predict via
     # the auto-predict (weights) flow.
