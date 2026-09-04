@@ -22,26 +22,31 @@ MatchedPairs = list[tuple[int, int]]
 def assign_greedy(
     iou_matrix: npt.NDArray[np.float64],
     iou_threshold: float,
+    valid_mask: npt.NDArray[np.bool_] | None = None,
 ) -> MatchedPairs:
-    """Greedy, prediction-order assignment (YOLO-style).
+    """Greedy, prediction-order assignment.
 
     Walks predictions in row order (caller sorts by confidence descending).
-    Each prediction claims its single highest-IoU ground truth; the match is
-    kept only if that GT is still free and the IoU is at least
-    ``iou_threshold``.  There is no fallback to a second-best GT — if the
-    argmax GT is already taken, the prediction goes unmatched.
+    Each prediction claims its highest-IoU ground truth that is still free,
+    clears ``iou_threshold`` and, when supplied, is allowed by ``valid_mask``.
     """
     n_preds, n_gts = iou_matrix.shape
     if n_gts == 0:
         return []
 
     matched_gt = np.zeros(n_gts, dtype=bool)
+    valid = iou_matrix >= iou_threshold
+    if valid_mask is not None:
+        valid = valid & valid_mask
     pairs: MatchedPairs = []
     for i in range(n_preds):
-        j = int(np.argmax(iou_matrix[i]))
-        if iou_matrix[i, j] >= iou_threshold and not matched_gt[j]:
-            matched_gt[j] = True
-            pairs.append((i, j))
+        candidates = valid[i] & ~matched_gt
+        if not candidates.any():
+            continue
+        candidate_ious = np.where(candidates, iou_matrix[i], -np.inf)
+        j = int(np.argmax(candidate_ious))
+        matched_gt[j] = True
+        pairs.append((i, j))
     return pairs
 
 
@@ -91,20 +96,26 @@ def assign_iou_prior(
 def assign_hungarian(
     iou_matrix: npt.NDArray[np.float64],
     iou_threshold: float,
+    valid_mask: npt.NDArray[np.bool_] | None = None,
 ) -> MatchedPairs:
-    """Globally optimal assignment via the Hungarian algorithm.
+    """Maximum-cardinality valid assignment, then maximum total IoU.
 
-    Runs ``scipy.optimize.linear_sum_assignment`` on the negative IoU matrix,
-    then keeps only the assigned pairs whose IoU is at least ``iou_threshold``.
-    Geometry-first; confidence plays no role.
+    A cardinality bonus makes one additional valid pair worth more than every
+    possible IoU-sum improvement among fewer pairs. Invalid edges score zero
+    and are discarded after the rectangular assignment is solved.
     """
     n_preds, n_gts = iou_matrix.shape
     if n_preds == 0 or n_gts == 0:
         return []
 
-    row_ind, col_ind = linear_sum_assignment(-iou_matrix)
+    valid = iou_matrix >= iou_threshold
+    if valid_mask is not None:
+        valid = valid & valid_mask
+    max_pairs = min(n_preds, n_gts)
+    score = np.where(valid, float(max_pairs + 1) + iou_matrix, 0.0)
+    row_ind, col_ind = linear_sum_assignment(-score)
     return [
         (int(i), int(j))
         for i, j in zip(row_ind.tolist(), col_ind.tolist(), strict=True)
-        if iou_matrix[i, j] >= iou_threshold
+        if valid[i, j]
     ]

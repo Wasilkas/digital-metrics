@@ -102,9 +102,9 @@ def match_boxes(
         g_label, p_label = gt_label[g], pred_label[p]
         pairs = _assign(strategy, iou_matrix, iou_threshold, p_label, g_label)
 
-        # iou_prior records the closest cross-class GT for unmatched preds so
-        # the confusion matrix captures label confusions; greedy and hungarian
-        # always book an unmatched prediction as "background".
+        # Record the closest cross-class GT for unmatched predictions so the
+        # confusion matrix captures label confusions. Class-aware assignment
+        # still leaves that GT unmatched, preserving its required FN record.
         _build_matches(
             matches,
             iou_matrix,
@@ -115,7 +115,7 @@ def match_boxes(
             p_label,
             pred_index[p],
             pred_conf[p],
-            cross_class_fp=strategy == "iou_prior",
+            cross_class_fp=True,
         )
 
     return matches
@@ -128,13 +128,13 @@ def _assign(
     pred_labels: npt.NDArray[np.object_],
     gt_labels: npt.NDArray[np.object_],
 ) -> MatchedPairs:
-    """Dispatch to the geometric assignment kernel for the given strategy."""
+    """Dispatch to a class-aware assignment kernel for the given strategy."""
+    label_match = pred_labels[:, None] == gt_labels[None, :]
     if strategy == "hungarian":
-        return assign_hungarian(iou_matrix, iou_threshold)
+        return assign_hungarian(iou_matrix, iou_threshold, valid_mask=label_match)
     if strategy == "iou_prior":
-        label_match = pred_labels[:, None] == gt_labels[None, :]
         return assign_iou_prior(iou_matrix, iou_threshold, valid_mask=label_match)
-    return assign_greedy(iou_matrix, iou_threshold)
+    return assign_greedy(iou_matrix, iou_threshold, valid_mask=label_match)
 
 
 def _build_matches(
