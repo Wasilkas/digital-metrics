@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from digital_metrics.matching import match_boxes
+from digital_metrics.matching.assignment import assign_greedy, assign_hungarian
 
 
 def _count(matches: dict[str, list[object]], label: str, mtype: str) -> int:  # type: ignore[type-arg]
@@ -77,8 +78,9 @@ def test_hungarian_tp_ge_greedy(tiny_dataset: tuple[pd.DataFrame, pd.DataFrame])
     assert total_tp_hungarian >= total_tp_greedy
 
 
-def test_greedy_bug_fix_no_double_gt_claim() -> None:
-    """A GT consumed by a label-mismatch FP must not also appear as FN."""
+@pytest.mark.parametrize("strategy", ["greedy", "hungarian", "iou_prior"])
+def test_wrong_class_prediction_does_not_consume_gt(strategy: str) -> None:
+    """A class-mismatch FP must not consume a GT or block a correct TP."""
     gt_df = pd.DataFrame(
         [("img", "class_a", 0, 0, 100, 100, "test")],
         columns=[
@@ -94,8 +96,8 @@ def test_greedy_bug_fix_no_double_gt_claim() -> None:
     # Two preds competing for the same GT; first one has wrong label
     preds_df = pd.DataFrame(
         [
-            ("img", "class_b", 0, 0, 100, 100, 0.9),  # label mismatch → FP, GT consumed
-            ("img", "class_a", 0, 0, 100, 100, 0.5),  # should NOT get TP (GT consumed)
+            ("img", "class_b", 0, 0, 100, 100, 0.9),  # label mismatch → FP
+            ("img", "class_a", 0, 0, 100, 100, 0.5),  # correct class → TP
         ],
         columns=[
             "image_name",
@@ -107,13 +109,39 @@ def test_greedy_bug_fix_no_double_gt_claim() -> None:
             "confidence",
         ],
     )
-    matches = match_boxes(gt_df, preds_df, iou_threshold=0.5, strategy="greedy")
-    # class_a: one pred with IoU=1.0 but GT already consumed → FP
-    assert _count(matches, "class_a", "TP") == 0
-    # class_b: the label-mismatch pred is an FP
+    matches = match_boxes(gt_df, preds_df, iou_threshold=0.5, strategy=strategy)  # type: ignore[arg-type]
+    assert _count(matches, "class_a", "TP") == 1
     assert _count(matches, "class_b", "FP") == 1
-    # GT is consumed by class_b pred, so NOT a FN for class_a
     assert _count(matches, "class_a", "FN") == 0
+
+
+@pytest.mark.parametrize("strategy", ["greedy", "hungarian", "iou_prior"])
+def test_wrong_class_prediction_emits_fp_and_fn(strategy: str) -> None:
+    gt_df = pd.DataFrame(
+        [("img", "cat", 0, 0, 10, 10)],
+        columns=_GT_COLS,
+    )
+    preds_df = pd.DataFrame(
+        [("img", "dog", 0, 0, 10, 10, 0.9)],
+        columns=_PRED_COLS,
+    )
+
+    matches = match_boxes(gt_df, preds_df, 0.5, strategy=strategy)  # type: ignore[arg-type]
+
+    assert _count(matches, "dog", "FP") == 1
+    assert _count(matches, "cat", "FN") == 1
+
+
+def test_greedy_falls_back_to_next_available_gt() -> None:
+    iou = np.array([[0.90, 0.80], [0.85, 0.70]])
+
+    assert assign_greedy(iou, 0.50) == [(0, 0), (1, 1)]
+
+
+def test_hungarian_prioritizes_valid_match_cardinality() -> None:
+    iou = np.array([[0.99, 0.60], [0.60, 0.49]])
+
+    assert set(assign_hungarian(iou, 0.50)) == {(0, 1), (1, 0)}
 
 
 _GT_COLS = [

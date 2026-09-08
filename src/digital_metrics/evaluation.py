@@ -86,8 +86,8 @@ class Evaluation:
                 picks a single threshold, shared by every class, that maximises
                 the mean per-class F1.
             weights_path: Optional path to YOLO weights. When ``preds_df`` is
-                ``None``, predictions are generated from these weights the first
-                time the evaluation runs (over ``split_df['image_path']``). If
+                ``None``, predictions are generated from these weights as needed
+                for each evaluation split (over ``split_df['image_path']``). If
                 ``preds_df`` is ``None`` and no weights are given, calling the
                 evaluation raises ``ValueError``.
             backend: Which metrics engine to use. ``None`` (default) runs the
@@ -163,6 +163,10 @@ class Evaluation:
 
         self._weights_path = inference.weights_path
         self._has_predictions = preds_df is not None
+        # ``None`` means caller-provided predictions are authoritative.  For the
+        # weights flow, keep the exact source paths already inferred so later
+        # split-scoped calls can fill only the missing part of the dataset.
+        self._predicted_image_paths: set[str] | None = None if self._has_predictions else set()
         if not self._has_predictions and inference.weights_path is not None:
             logger.info(
                 f"No predictions provided; they will be generated from weights "
@@ -329,6 +333,35 @@ class Evaluation:
         if not image_paths:
             raise ValueError(f"No 'image_path' values found in split_df (split={split!r}).")
 
+        preds = self._predict_image_paths(
+            weights,
+            image_paths,
+            conf=conf,
+            iou=iou,
+            imgsz=imgsz,
+            batch=batch,
+            device=device,
+            image_name=image_name,
+            append=False,
+            **model_kwargs,
+        )
+        return preds
+
+    def _predict_image_paths(
+        self,
+        weights: str,
+        image_paths: list[str],
+        *,
+        conf: float = 0.001,
+        iou: float = 0.7,
+        imgsz: int = 640,
+        batch: int = 16,
+        device: str | None = None,
+        image_name: ImageNameMode = "name",
+        append: bool,
+        **model_kwargs: Any,
+    ) -> pd.DataFrame:
+        """Infer ``image_paths`` and store them, optionally extending prior results."""
         preds = predict_on_images(
             weights,
             image_paths,
@@ -339,9 +372,16 @@ class Evaluation:
             device=device,
             image_name=image_name,
             **model_kwargs,
-        )
-        self.preds_df = preds.reset_index(drop=True)
-        self._raw_preds_df = self.preds_df.copy()
+        ).reset_index(drop=True)
+        if append:
+            self._raw_preds_df = pd.concat([self._raw_preds_df, preds], ignore_index=True)
+        else:
+            self._raw_preds_df = preds.copy()
+            if self._predicted_image_paths is not None:
+                self._predicted_image_paths.clear()
+        self.preds_df = self._raw_preds_df.copy()
+        if self._predicted_image_paths is not None:
+            self._predicted_image_paths.update(image_paths)
         self._has_predictions = True
         if self._preprocessor.enabled:
             self.preds_df = self._preprocessor.process(self.preds_df)
@@ -454,7 +494,7 @@ class Evaluation:
         Raises:
             ValueError: If no predictions exist and no ``weights_path`` was given.
         """
-        if self._has_predictions:
+        if self._predicted_image_paths is None:
             return
         if self._weights_path is None:
             raise ValueError(
@@ -462,9 +502,36 @@ class Evaluation:
                 "weights_path was provided. Pass preds_df, set weights_path=..., or "
                 "call predict_to_dataframe() before running the evaluation."
             )
-        logger.info(f"Generating predictions from weights '{self._weights_path}'...")
-        # Predict only the splits that will be evaluated/calibrated on.
-        self.predict_to_dataframe(self._weights_path, split=splits, **self._predict_kwargs)
+        if splits is None:
+            gt = self.split_df
+        else:
+            if "split" not in self.split_df.columns:
+                raise ValueError(
+                    f"Automatic prediction for splits {splits!r} requires a 'split' column "
+                    "in split_df, but none was found."
+                )
+            gt = self.split_df[self.split_df["split"].isin(splits)]
+        if "image_path" not in gt.columns:
+            raise ValueError(
+                "predict_to_dataframe requires an 'image_path' column in split_df "
+                "(full path to each image); none was found."
+            )
+        requested_paths = gt["image_path"].dropna().unique().tolist()
+        if not requested_paths:
+            raise ValueError(f"No 'image_path' values found in split_df (split={splits!r}).")
+        missing_paths = [p for p in requested_paths if p not in self._predicted_image_paths]
+        if not missing_paths:
+            return
+        logger.info(
+            f"Generating predictions from weights '{self._weights_path}' for "
+            f"{len(missing_paths)} not-yet-predicted image(s)..."
+        )
+        self._predict_image_paths(
+            self._weights_path,
+            missing_paths,
+            append=self._has_predictions,
+            **self._predict_kwargs,
+        )
 
     def _call(
         self,

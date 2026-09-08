@@ -364,10 +364,9 @@ def _confusion_process_batch(
         else:
             matrix[nc, int(gc)] += 1  # missed GT → background row (FN)
 
-    if n:
-        for i, dc in enumerate(det_classes):
-            if not (m1 == i).any():
-                matrix[int(dc), nc] += 1  # spurious prediction → background col (FP)
+    for i, dc in enumerate(det_classes):
+        if not (m1 == i).any():
+            matrix[int(dc), nc] += 1  # spurious prediction → background col (FP)
 
 
 def compute_ultralytics_confusion_matrix(
