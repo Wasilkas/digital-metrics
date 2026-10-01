@@ -3,7 +3,7 @@
 Generated from Conventional Commits. Curated notes through 0.5.3 are preserved
 in `docs/changelog-history.md`.
 
-## Unreleased
+## v0.6.0 (2026-10-01)
 
 ### Bug Fixes
 
@@ -12,6 +12,11 @@ in `docs/changelog-history.md`.
 - count unmatched detections in YOLO confusion matrix (`c2cdca3`)
 
 - accumulate auto predictions across splits (`15e223d`)
+
+
+### Features
+
+- **release**: automate local semantic versions and changelog (`2377cd9`)
 
 ## [0.5.3] — 2026-08-24
 
