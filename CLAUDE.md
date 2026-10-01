@@ -31,16 +31,18 @@ Never use `pip` directly. Always use `uv`.
 
 ## Versioning
 
-Bump the component version (`version` in `pyproject.toml`, `MAJOR.MINOR.PATCH`)
-on **every** release — do not ship changes without a version bump. Which part to
-increment:
+Local releases use Python Semantic Release and Conventional Commits on `main`.
+`fix:` / `perf:` bump PATCH; `feat:` bumps MINOR. Breaking changes (`!` or
+`BREAKING CHANGE:`) bump MINOR while the package is below 1.0. Other commit
+categories do not trigger releases by themselves. Install the local hooks with
+`uv run --locked --no-sync python scripts/local_release.py --install-hooks`.
 
-- **PATCH** (`0.3.0` → `0.3.1`) — bug fixes.
-- **MINOR** (`0.3.1` → `0.4.0`) — new features.
-- **MAJOR** (`0.4.0` → `1.0.0`) — a release / breaking change.
-
-After editing `pyproject.toml`, run `uv sync` (or `uv lock`) so `uv.lock` records
-the new version too.
+The release helper updates `pyproject.toml`, the project's version in `uv.lock`
+and `CHANGELOG.md`, runs the configured checks, commits the metadata and creates
+an annotated `vX.Y.Z` tag. It never pushes, publishes or builds artifacts.
+See [local release instructions](docs/local-release.md) for manual invocation,
+changelog regeneration and recovery. Preserve `docs/changelog-history.md`, the
+curated changelog through 0.5.3; newer entries are generated automatically.
 
 ---
 

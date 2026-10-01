@@ -1,0 +1,39 @@
+{%- macro changes(elements) -%}
+{% for type, commits in elements | dictsort if type != "unknown" and commits %}
+
+### {{ type | title }}
+
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.descriptions | join("\n\n  ") }} (`{{ commit.commit.hexsha[:7] }}`)
+{% if commit.breaking_descriptions %}
+  **Breaking change:** {{ commit.breaking_descriptions | join("\n\n  ") }}
+{% endif %}
+{% if commit.release_notices %}
+  {{ commit.release_notices | join("\n\n  ") }}
+{% endif %}
+
+{% endfor %}
+{% endfor %}
+{%- endmacro -%}
+# Changelog
+
+Generated from Conventional Commits. Curated notes through 0.5.3 are preserved
+in `docs/changelog-history.md`.
+{% set pending = namespace(found=false) %}
+{% for type, commits in ctx.history.unreleased.items() if type != "unknown" and commits %}
+{% set pending.found = true %}
+{% endfor %}
+{% if pending.found %}
+
+## Unreleased
+
+{{ changes(ctx.history.unreleased) | trim }}
+{% endif %}
+{% for version, release in ctx.history.released.items() if (version.major, version.minor, version.patch) > (0, 5, 3) %}
+
+## {{ version.as_semver_tag() }} ({{ release.tagged_date.strftime("%Y-%m-%d") }})
+
+{{ changes(release.elements) | trim }}
+{% endfor %}
+
+{{ "docs/changelog-history.md" | read_file }}

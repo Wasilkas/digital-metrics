@@ -1,18 +1,3 @@
-# Changelog
-
-Generated from Conventional Commits. Curated notes through 0.5.3 are preserved
-in `docs/changelog-history.md`.
-
-## Unreleased
-
-### Bug Fixes
-
-- preserve valid class-aware box assignments (`8136eca`)
-
-- count unmatched detections in YOLO confusion matrix (`c2cdca3`)
-
-- accumulate auto predictions across splits (`15e223d`)
-
 ## [0.5.3] — 2026-08-24
 
 ### Fixed

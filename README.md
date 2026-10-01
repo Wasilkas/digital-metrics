@@ -96,3 +96,17 @@ uv run ruff format .
 uv run mypy src/
 uv run pytest --cov=src/digital_metrics tests/
 ```
+
+## Local releases
+
+Install the local checks and automatic release hooks after `uv sync --locked --dev`:
+
+```bash
+uv run --locked --no-sync python scripts/local_release.py --install-hooks
+```
+
+Commits on `main` use Conventional Commits to update the version, lockfile and
+changelog, then create a checked release commit and an annotated local tag.
+For a manual release, run `uv run --locked --no-sync python scripts/local_release.py`.
+See [local release instructions](docs/local-release.md) for version rules, changelog
+updates and recovery. All release operations are local.

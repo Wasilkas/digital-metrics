@@ -1,0 +1,46 @@
+# All checks use the project's locked development tools.
+default_install_hook_types: [pre-commit]
+default_stages: [pre-commit]
+
+repos:
+  - repo: local
+    hooks:
+      - id: changelog
+        name: Generate changelog from committed history
+        entry: uv run --locked --no-sync python scripts/local_release.py --changelog
+        language: system
+        always_run: true
+        pass_filenames: false
+        require_serial: true
+
+      - id: ruff
+        name: uv run ruff check .
+        entry: uv run --locked --no-sync ruff check .
+        language: system
+        types_or: [python, pyi, toml]
+        pass_filenames: false
+
+      - id: mypy
+        name: uv run mypy src/ scripts/local_release.py
+        entry: uv run --locked --no-sync mypy src/ scripts/local_release.py
+        language: system
+        types_or: [python, pyi, toml]
+        pass_filenames: false
+        require_serial: true
+
+      - id: pytest
+        name: uv run pytest
+        entry: uv run --locked --no-sync pytest
+        language: system
+        types_or: [python, toml]
+        pass_filenames: false
+
+      - id: local-release
+        name: Create local semantic version commit and tag
+        entry: uv run --locked --no-sync python scripts/local_release.py
+        args: [--post-commit]
+        language: system
+        stages: [post-commit]
+        always_run: true
+        pass_filenames: false
+        require_serial: true
