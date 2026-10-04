@@ -1,11 +1,8 @@
-import warnings
 from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
 from sklearn.metrics import cohen_kappa_score
-
-warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 BoxArray = npt.NDArray[np.floating] | Sequence[Sequence[float]]
 
@@ -36,10 +33,14 @@ def compute_kappa(
 
     for bbox in boxes_a:
         x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+        x1, x2 = max(0, min(width, x1)), max(0, min(width, x2))
+        y1, y2 = max(0, min(height, y1)), max(0, min(height, y2))
         mask_gt[y1:y2, x1:x2] = 1
 
     for bbox in boxes_b:
         x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+        x1, x2 = max(0, min(width, x1)), max(0, min(width, x2))
+        y1, y2 = max(0, min(height, y1)), max(0, min(height, y2))
         mask_pred[y1:y2, x1:x2] = 1
 
     y_true = mask_pred.ravel()
@@ -47,7 +48,7 @@ def compute_kappa(
 
     # Bug fix: len(y_true > 1) always equals len(y_true) (length of boolean array).
     # Correct check: whether there are more than 1 element in each array.
-    if len(y_true) > 1 and len(y_pred) > 1:
+    if len(y_true) > 1 and len(y_pred) > 1 and (y_true != y_true[0]).any():
         score = cohen_kappa_score(y_true, y_pred, labels=[0, 1])
     else:
         score = 0.0

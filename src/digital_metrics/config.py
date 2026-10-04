@@ -9,13 +9,12 @@ defaults exactly, so ``Evaluation(preds, split)`` and
 ``Evaluation(preds, split, scoring=ScoringConfig())`` behave identically.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any
 
 from .matching import MatchingStrategy
 from .scoring import APMethod, ConfidenceOptimization
+from .validation import validate_iou, validate_option
 
 
 @dataclass
@@ -32,6 +31,16 @@ class ScoringConfig:
     confidence_optimization: ConfidenceOptimization = "per_class"
     skip_cohen_kappa: bool = True
 
+    def __post_init__(self) -> None:
+        validate_iou(self.iou_threshold)
+        validate_option(
+            "matching_strategy", self.matching_strategy, ("greedy", "iou_prior", "hungarian")
+        )
+        validate_option("ap_method", self.ap_method, ("interp", "continuous"))
+        validate_option(
+            "confidence_optimization", self.confidence_optimization, ("per_class", "global")
+        )
+
 
 @dataclass
 class PreprocessConfig:
@@ -46,6 +55,12 @@ class PreprocessConfig:
     conf_threshold: float | None = None
     nms_containment_threshold: float | None = None
     nms_iou_threshold: float | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("conf_threshold", "nms_containment_threshold", "nms_iou_threshold"):
+            value = getattr(self, name)
+            if value is not None:
+                validate_iou(value)
 
 
 @dataclass

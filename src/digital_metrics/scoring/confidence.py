@@ -115,7 +115,7 @@ def find_best_global_confidence(
 
     best_threshold = 0.0
     best_mean_f1 = -1.0
-    for t in sorted(candidate_thresholds):
+    for t in sorted(candidate_thresholds, reverse=True):
         f1_sum = 0.0
         for confidences, cum_tp, cum_fp, n_positives in per_class:
             idx = int(np.searchsorted(confidences, t, side="left"))

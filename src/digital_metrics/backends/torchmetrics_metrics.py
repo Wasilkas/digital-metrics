@@ -26,15 +26,12 @@ tensor, so the AP values equal ``MeanAveragePrecision`` 's own
 
 Calibration
 -----------
-``extended_summary`` also exposes a ``scores`` tensor: the confidence threshold
-at each recall point. That lets us read P/R/F1 at an arbitrary confidence
-(:func:`compute_torchmetrics_metrics` with ``conf_threshold=``) and find the
-F1-optimal confidence on a held-out split (:func:`find_torchmetrics_confidence`)
-— the same "calibrate on val, report on test" flow the Ultralytics backend
-supports.
-"""
+Calibration searches complete observed-confidence tie groups using retained
+COCO detections, including empty-image FPs. Explicit thresholds report exact
+TP/FP/FN and realizable P/R/F1 independently of the AP envelope. Cached IoUs and
+per-image updates avoid re-evaluating every image at every global score.
 
-from __future__ import annotations
+"""
 
 from typing import Any, Literal
 
@@ -45,6 +42,7 @@ import pandas as pd
 from ..grouping import image_row_indices
 from ..types import DetectionMetrics
 from ..validation import drop_na_labels
+from .operating_points import calibrate_raw, complete_counts, prepare_inputs, raw_counts, raw_prf1
 
 _BBOX_COLS = ["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
 # Ten IoU thresholds, exactly as COCO / Ultralytics val (linspace(0.5, 0.95, 10)).
@@ -186,6 +184,9 @@ def _torchmetrics_eval(
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(_INSTALL_HINT) from exc
 
+    gt_df, preds_df, classes = prepare_inputs(gt_df, preds_df, classes, split_image_names)
+    if split_image_names is not None:
+        split_image_names = [str(name) for name in split_image_names]
     # Scope the images first, then drop the NA-label placeholder rows empty
     # images carry: the image stays in scope, but the row names no class.
     images: set[str] = set(gt_df["image_name"].unique())
@@ -303,39 +304,41 @@ def compute_torchmetrics_metrics(
         split_image_names: Complete list of image names in the split, including
             empty images (no GT). Predictions on those images are counted as
             false positives. Defaults to the images present in ``gt_df``.
-        conf_threshold: Where to read P/R/F1 on the per-class IoU-0.50 P-R curve.
-            ``None`` (default) uses the in-sample max-F1 recall point. A ``float``
-            reads every class at that shared confidence; a ``dict`` reads each
-            class at its own (e.g. a threshold calibrated on a held-out split via
-            :func:`find_torchmetrics_confidence`). AP is always taken over the full
-            curve and is unaffected by ``conf_threshold``.
+        conf_threshold: ``None`` uses the backend's unthresholded summary.
+            A float or per-class dict retains original confidence >= threshold
+            and reports exact IoU-0.50 counts and P/R/F1 using torchmetrics matching.
+            AP always uses the full prediction set.
 
     Returns:
-        ``{class_name: DetectionMetrics}`` for every class that has at least one
-        GT box in the split (classes absent from the GT are not scored, matching
-        the Ultralytics backend).
+        Per-class DetectionMetrics. Unthresholded output includes GT classes;
+        explicit thresholds also include vocabulary classes absent from GT,
+        with observed counts and NaN AP.
 
     Raises:
         ImportError: If the optional ``torchmetrics`` dependency is not installed.
-        ValueError: If ``conf_threshold`` is given but torchmetrics returned no
-            ``scores`` array (so confidence cannot be mapped to an operating point).
+        ValueError: If inputs or thresholds are invalid.
     """
     per_class = _torchmetrics_eval(gt_df, preds_df, classes, split_image_names)
 
+    operating = (
+        raw_prf1(gt_df, preds_df, classes, split_image_names, conf_threshold, "torchmetrics")
+        if conf_threshold is not None
+        else {}
+    )
+    counts = (
+        raw_counts(gt_df, preds_df, classes, split_image_names, conf_threshold, "torchmetrics")
+        if conf_threshold is not None
+        else {}
+    )
     out: dict[str, DetectionMetrics] = {}
-    for name, (cls_prec, cls_scores50) in per_class.items():
-        if conf_threshold is None:
-            p_val, r_val, f1_val = _prf1_at_iou50(cls_prec[_IOU50_IDX])
-        else:
-            if cls_scores50 is None:
-                raise ValueError(_NO_SCORES_HINT)
-            cval = (
-                conf_threshold.get(name, 0.0)
-                if isinstance(conf_threshold, dict)
-                else conf_threshold
-            )
-            p_val, r_val, f1_val = _read_prf1_at_conf(cls_prec[_IOU50_IDX], cls_scores50, cval)
+    for name, (cls_prec, _) in per_class.items():
+        p_val, r_val, f1_val = (
+            operating[name] if conf_threshold is not None else _prf1_at_iou50(cls_prec[_IOU50_IDX])
+        )
         out[name] = DetectionMetrics(
+            tp=counts[name][0] if name in counts else None,
+            fp=counts[name][1] if name in counts else None,
+            fn=counts[name][2] if name in counts else None,
             precision=p_val,
             recall=r_val,
             f1=f1_val,
@@ -343,7 +346,9 @@ def compute_torchmetrics_metrics(
             ap75=_ap(cls_prec[_IOU75_IDX]),
             ap50_95=float(np.mean([_ap(row) for row in cls_prec])),
         )
-    return out
+    return complete_counts(
+        out, gt_df, preds_df, classes, split_image_names, conf_threshold, "torchmetrics"
+    )
 
 
 def find_torchmetrics_confidence(
@@ -355,32 +360,20 @@ def find_torchmetrics_confidence(
 ) -> float | dict[str, float]:
     """Confidence threshold(s) maximising F1 on this split (calibration helper).
 
-    Reads torchmetrics' IoU-0.50 precision and score curves: ``"global"`` returns
+    Searches complete observed-confidence tie groups using COCO matching: ``"global"`` returns
     one threshold (max mean per-class F1, YOLO-style); ``"per_class"`` returns
     ``{class_name: threshold}``. Feed the result to
     :func:`compute_torchmetrics_metrics` as ``conf_threshold=`` on another split to
     read P/R/F1 at the calibrated operating point ("calibrate on val, report on
-    test"). Returns ``0.0`` / ``{}`` when the split has no scorable detections.
+    test"). With no predictions, returns zero thresholds for present GT classes;
+    with no GT classes, returns ``0.0`` / ``{}``.
 
     Raises:
         ImportError: If the optional ``torchmetrics`` dependency is not installed.
-        ValueError: If torchmetrics returned no ``scores`` array.
+        ValueError: If inputs or calibration mode are invalid.
     """
-    per_class = _torchmetrics_eval(gt_df, preds_df, classes, split_image_names)
-    if not per_class:
-        return 0.0 if mode == "global" else {}
-    if any(scores is None for _, scores in per_class.values()):
-        raise ValueError(_NO_SCORES_HINT)
-
-    if mode == "per_class":
-        return {
-            name: _conf_at_max_f1(cls_prec[_IOU50_IDX], cls_scores50)
-            for name, (cls_prec, cls_scores50) in per_class.items()
-            if cls_scores50 is not None
-        }
-    curves = [
-        (cls_prec[_IOU50_IDX], cls_scores50)
-        for cls_prec, cls_scores50 in per_class.values()
-        if cls_scores50 is not None
-    ]
-    return _global_conf_at_max_mean_f1(curves)
+    try:
+        from torchmetrics.detection import MeanAveragePrecision  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(_INSTALL_HINT) from exc
+    return calibrate_raw(gt_df, preds_df, classes, split_image_names, mode, "torchmetrics")

@@ -1,8 +1,11 @@
+import math
+
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
 from ..matching import compute_iou_matrix
+from ..validation import REQUIRED_COLS_GT, validate_dataframes, validate_iou
 
 _BBOX_COLS = ["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]
 
@@ -54,6 +57,8 @@ def filter_by_confidence(
     Returns:
         Filtered DataFrame (same index, same column order).
     """
+    validate_iou(threshold)
+    validate_dataframes(preds_df, pd.DataFrame(columns=sorted(REQUIRED_COLS_GT)))
     return preds_df[preds_df["confidence"] >= threshold]
 
 
@@ -82,6 +87,10 @@ def apply_nms(
     Returns:
         DataFrame with suppressed rows removed (original index preserved).
     """
+    for value in (same_class_containment_threshold, cross_class_iou_threshold):
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("NMS thresholds must be finite and nonnegative.")
+    validate_dataframes(preds_df, pd.DataFrame(columns=sorted(REQUIRED_COLS_GT)))
     if len(preds_df) == 0:
         return preds_df
 

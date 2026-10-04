@@ -117,8 +117,8 @@ def test_adapt_detection_metrics_reproduces_backend_numbers(
     assert a.fp == pytest.approx(0.45)
     assert a.cohen_kappa == -1
     # CIs are real proportions in [0, 1].
-    assert 0.0 <= a.recall_ci_lower <= a.recall <= a.recall_ci_upper <= 1.0
-    assert 0.0 <= a.precision_ci_lower <= a.precision <= a.precision_ci_upper <= 1.0
+    assert not a.counts_observed
+    assert np.isnan(a.recall_ci_lower) and np.isnan(a.precision_ci_upper)
 
     # Class present in GT but absent from the backend output → NaN AP, zero counts.
     c = adapted["class_c"]
@@ -250,7 +250,7 @@ def test_backend_calibration_rejects_missing_split(
     # raises without the extra installed.
     gt_df, preds_df = split_dataset  # has 'val' and 'test', no 'train'
     ev = Evaluation(preds_df, gt_df, backend="ultralytics")
-    with pytest.raises(ValueError, match="No ground-truth rows"):
+    with pytest.raises(ValueError, match="split.*unavailable"):
         ev(split="test", calibration_split="train")
 
 

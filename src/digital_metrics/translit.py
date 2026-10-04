@@ -16,8 +16,6 @@ warning and left untouched.
 A tiny foundation module — stdlib + loguru only.
 """
 
-from __future__ import annotations
-
 import difflib
 from collections.abc import Iterable
 
@@ -118,7 +116,7 @@ def _strings(labels: Iterable[object]) -> list[str]:
     return [label for label in labels if isinstance(label, str)]
 
 
-def build_translit_index(gt_labels: Iterable[str]) -> dict[str, str]:
+def _build_translit_index(gt_labels: Iterable[str]) -> tuple[dict[str, str], set[str]]:
     """Index the ground-truth vocabulary by every normalised spelling of it.
 
     Each label contributes its own normalised form plus one per scheme in
@@ -156,7 +154,12 @@ def build_translit_index(gt_labels: Iterable[str]) -> dict[str, str]:
                 ambiguous.add(key)
                 continue
             index[key] = label
-    return index
+    return index, ambiguous
+
+
+def build_translit_index(gt_labels: Iterable[str]) -> dict[str, str]:
+    """Index unambiguous normalized spellings of ground-truth labels."""
+    return _build_translit_index(gt_labels)[0]
 
 
 def restore_labels(
@@ -191,7 +194,7 @@ def restore_labels(
 
     known = list(dict.fromkeys(_strings(gt_labels)))
     known_set = set(known)
-    index = build_translit_index(known)
+    index, ambiguous = _build_translit_index(known)
     keys = list(index)
 
     mapping: dict[str, str] = {}
@@ -202,7 +205,7 @@ def restore_labels(
             continue
         key = normalize_label(label)
         target = index.get(key)
-        if target is None and key:
+        if target is None and key and key not in ambiguous:
             close = difflib.get_close_matches(key, keys, n=1, cutoff=cutoff)
             target = index[close[0]] if close else None
         if target is None:

@@ -1,6 +1,6 @@
-from __future__ import annotations
-
+from collections.abc import Hashable
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -21,7 +21,13 @@ from .reporting import get_dashboards, plot_confidence_intervals
 from .scoring import APMethod, ConfidenceOptimization, get_confusions
 from .translit import restore_labels
 from .types import DetectionMetrics, Metrics, PredictMatch
-from .validation import REQUIRED_COLS_PREDS, validate_dataframes
+from .validation import (
+    REQUIRED_COLS_PREDS,
+    normalize_image_ids,
+    validate_dataframes,
+    validate_split,
+    validate_split_ownership,
+)
 
 
 class Evaluation:
@@ -181,9 +187,13 @@ class Evaluation:
             # Placeholder until predictions are generated (predict_to_dataframe).
             preds_df = pd.DataFrame(columns=sorted(REQUIRED_COLS_PREDS))
 
-        self.preds_df: pd.DataFrame = preds_df.reset_index(drop=True)
+        self.preds_df: pd.DataFrame = preds_df.copy()
         self._raw_preds_df: pd.DataFrame = self.preds_df.copy()
-        self.split_df: pd.DataFrame = split_df.reset_index(drop=True)
+        self.split_df: pd.DataFrame = split_df.copy()
+        validate_dataframes(self._raw_preds_df, self.split_df)
+        self.split_df, self.preds_df = normalize_image_ids(self.split_df, self.preds_df)
+        self._raw_preds_df = self.preds_df.copy()
+        validate_split_ownership(self.split_df)
         self.gt_df: pd.DataFrame | None = None
 
         self.iou_threshold = scoring.iou_threshold
@@ -249,8 +259,9 @@ class Evaluation:
         """Remove duplicate GT boxes (based on near-identical IoU)."""
         initial_len = len(self.split_df)
         dups: list[int] = []
-        for file_name in self.split_df["image_name"].unique():
-            file_df = self.split_df[self.split_df["image_name"] == file_name]
+        for _, file_df in self.split_df.dropna(subset=["instance_label"]).groupby(
+            ["image_name", "instance_label"], sort=False
+        ):
             bboxes = np.array(
                 file_df.apply(
                     lambda x: np.array(x[["bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]]),
@@ -362,6 +373,22 @@ class Evaluation:
         **model_kwargs: Any,
     ) -> pd.DataFrame:
         """Infer ``image_paths`` and store them, optionally extending prior results."""
+        id_by_source: dict[str, str] = {}
+        if "image_path" in self.split_df:
+            for path in image_paths:
+                values = self.split_df.loc[
+                    self.split_df["image_path"] == path, "image_name"
+                ].unique()
+                if len(values) != 1:
+                    raise ValueError("Each inference image_path must map to one image_name.")
+                key = (
+                    str(path)
+                    if image_name == "path"
+                    else (Path(path).stem if image_name == "stem" else Path(path).name)
+                )
+                if key in id_by_source and id_by_source[key] != values[0]:
+                    raise ValueError(f"Inference image_name normalization collision for {key!r}.")
+                id_by_source[key] = str(values[0])
         preds = predict_on_images(
             weights,
             image_paths,
@@ -373,6 +400,10 @@ class Evaluation:
             image_name=image_name,
             **model_kwargs,
         ).reset_index(drop=True)
+        if id_by_source:
+            preds["image_name"] = preds["image_name"].map(id_by_source)
+        validate_dataframes(preds, self.split_df)
+        self.split_df, preds = normalize_image_ids(self.split_df, preds)
         if append:
             self._raw_preds_df = pd.concat([self._raw_preds_df, preds], ignore_index=True)
         else:
@@ -414,6 +445,7 @@ class Evaluation:
         self._call(split, find_best_confs=find_best_confs, calibration_split=calibration_split)
 
     def _define_gt(self, split: str = "all") -> None:
+        validate_split(self.split_df, split)
         self.gt_df = (
             deepcopy(self.split_df) if split == "all" else self.split_df.query("split == @split")
         )
@@ -464,10 +496,8 @@ class Evaluation:
         )
         self._raw_preds_df = self._raw_preds_df[
             self._raw_preds_df["instance_label"].isin(known)
-        ].reset_index(drop=True)
-        self.preds_df = self.preds_df[self.preds_df["instance_label"].isin(known)].reset_index(
-            drop=True
-        )
+        ].copy()
+        self.preds_df = self.preds_df[self.preds_df["instance_label"].isin(known)].copy()
 
     def _splits_to_predict(self, split: str, calibration_split: str | None) -> list[str] | None:
         """Splits whose images must be predicted before the evaluation runs.
@@ -496,11 +526,9 @@ class Evaluation:
         """
         if self._predicted_image_paths is None:
             return
-        if self._weights_path is None:
+        if not self._has_predictions and self._weights_path is None:
             raise ValueError(
-                "Evaluation has no predictions to score: preds_df was None and no "
-                "weights_path was provided. Pass preds_df, set weights_path=..., or "
-                "call predict_to_dataframe() before running the evaluation."
+                "Evaluation has no predictions to score; pass preds_df or weights_path."
             )
         if splits is None:
             gt = self.split_df
@@ -522,6 +550,11 @@ class Evaluation:
         missing_paths = [p for p in requested_paths if p not in self._predicted_image_paths]
         if not missing_paths:
             return
+        if self._weights_path is None:
+            raise ValueError(
+                "Evaluation has no predictions for requested images and no weights_path; "
+                "pass preds_df, set weights_path, or call predict_to_dataframe()."
+            )
         logger.info(
             f"Generating predictions from weights '{self._weights_path}' for "
             f"{len(missing_paths)} not-yet-predicted image(s)..."
@@ -543,9 +576,13 @@ class Evaluation:
         # The engine may decline a calibration split (e.g. torchmetrics); resolve
         # it first so auto-prediction covers exactly the splits that get used.
         calibration_split = self._engine.resolve_calibration_split(calibration_split)
+        validate_split(self.split_df, split)
+        if calibration_split is not None:
+            validate_split(self.split_df, calibration_split)
         self._ensure_predictions(self._splits_to_predict(split, calibration_split))
         self._define_gt(split)
         assert self.gt_df is not None
+        validate_dataframes(self._raw_preds_df, self.split_df)
         self._restore_transliterated_labels()
         self._drop_unknown_pred_classes()
 
@@ -588,9 +625,11 @@ class Evaluation:
 
     def _compute_external(self, backend: Backend, split: str) -> dict[str, DetectionMetrics]:
         """Run an external backend over ``split`` and return its per-class metrics."""
+        validate_split(self.split_df, split)
         self._ensure_predictions(self._splits_to_predict(split, None))
         self._define_gt(split)
         assert self.gt_df is not None
+        validate_dataframes(self._raw_preds_df, self.split_df)
         self._restore_transliterated_labels()
         self._drop_unknown_pred_classes()
         # Backends score the raw predictions (YOLO val style); no conf/NMS preprocessing.
@@ -627,7 +666,8 @@ class Evaluation:
         Returns:
             (devs, dtrk) DataFrames.
         """
-        assert self.metrics, "Call evaluation() before get_dashboards()."
+        if self.gt_df is None:
+            raise ValueError("Call evaluation() before get_dashboards().")
         return get_dashboards(
             metrics=self.metrics,
             split_df=self.split_df,
@@ -650,7 +690,7 @@ class Evaluation:
 
         Args:
             metric: One of "precision", "recall", "perebrak", "nedobrak".
-            confidence_level: CI level passed through for the title. Defaults to 0.95.
+            confidence_level: Statistical coverage of Wilson bounds. Defaults to 0.95.
             save_path: Where to save the PNG; None shows the plot.
             figsize: Figure size.
 
@@ -738,8 +778,8 @@ class Evaluation:
         # group name is the class whose best-confidence threshold applies.
         matches = self.unfiltered_matches or self._matches
         thresholds = self._best_confidences if apply_thresholds else {}
-        pred_type: dict[int, str] = {}
-        gt_type: dict[int, str] = {}
+        pred_type: dict[Hashable, str] = {}
+        gt_type: dict[Hashable, str] = {}
         for class_name, records in matches.items():
             threshold = thresholds.get(class_name, 0.0)
             for m in records:
@@ -752,7 +792,9 @@ class Evaluation:
                     gt_type[m.gt_index] = "FN" if (filtered and m.type == "TP") else m.type
 
         gt_df = self.gt_df.copy()
-        preds_df = self.preds_df.copy()
+        preds_df = self.preds_df[
+            self.preds_df["image_name"].isin(self.gt_df["image_name"].unique())
+        ].copy()
         gt_df["predict_type"] = [gt_type.get(i, "FN") for i in gt_df.index]
         preds_df["predict_type"] = [pred_type.get(i, "FP") for i in preds_df.index]
         return gt_df, preds_df

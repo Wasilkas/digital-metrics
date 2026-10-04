@@ -559,7 +559,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "scikit-learn", specifier = ">=1.3" },
     { name = "scipy", specifier = ">=1.10" },
-    { name = "torchmetrics", extras = ["detection"], marker = "extra == 'torchmetrics'", specifier = ">=1.0" },
+    { name = "torchmetrics", extras = ["detection"], marker = "extra == 'torchmetrics'", specifier = ">=1.3.1" },
     { name = "tqdm", specifier = ">=4.65" },
     { name = "ultralytics", marker = "extra == 'ultralytics'", specifier = ">=8.3" },
 ]

@@ -11,8 +11,6 @@ joins back to the ground-truth ``image_name``.
 so the core install stays torch-free.
 """
 
-from __future__ import annotations
-
 import gc
 from pathlib import Path
 from typing import Any, Literal
@@ -189,6 +187,7 @@ def predict_on_images(
 
     rows: list[dict[str, Any]] = []
     n_images = 0
+    results = r = boxes = None
     try:
         # Chunk the source list: peak VRAM stays bounded to ``batch`` images because
         # each ``predict`` call releases its retained tensors when it finishes.
@@ -226,6 +225,7 @@ def predict_on_images(
         # Detections are already numpy by now, so nothing here needs the GPU: free
         # it before returning (also on an error/OOM path) instead of leaving the
         # run's peak reserved for the rest of the process's life.
+        results = r = boxes = None
         _release_gpu_memory(model)
 
     logger.info(f"Predicted {len(rows)} boxes over {n_images} images.")

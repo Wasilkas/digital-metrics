@@ -23,8 +23,6 @@ Four things are logged (all opt-out-able):
   console.
 """
 
-from __future__ import annotations
-
 import os
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
@@ -56,7 +54,7 @@ _DRAFT_STATUSES = frozenset({"created", "draft"})
 _FINISHED_STATUSES = frozenset({"completed", "published", "closed", "failed", "stopped"})
 
 
-def _import_task() -> type[Task]:
+def _import_task() -> "type[Task]":
     """Import ``clearml.Task`` lazily with an install hint on failure."""
     try:
         from clearml import Task
@@ -118,7 +116,7 @@ class ClearMLTracker:
 
     def __init__(
         self,
-        task: Task | None = None,
+        task: "Task | None" = None,
         *,
         project_name: str | None = None,
         task_name: str | None = None,
@@ -176,7 +174,7 @@ class ClearMLTracker:
 
     def log_evaluation(
         self,
-        evaluation: Evaluation,
+        evaluation: "Evaluation",
         *,
         iteration: int = 0,
         artifacts_dir: str = "metrics/",
@@ -199,7 +197,7 @@ class ClearMLTracker:
         Returns:
             ``(devs, dtrk)`` — the dashboards from ``get_dashboards``.
         """
-        assert evaluation.metrics, "Call evaluation() before log_evaluation()."
+        assert evaluation.gt_df is not None, "Call evaluation() before log_evaluation()."
         os.makedirs(artifacts_dir, exist_ok=True)
 
         devs, dtrk = evaluation.get_dashboards(
@@ -247,7 +245,7 @@ class ClearMLTracker:
 
     def log_artifacts(
         self,
-        evaluation: Evaluation,
+        evaluation: "Evaluation",
         devs: pd.DataFrame,
         dtrk: pd.DataFrame,
         *,
@@ -279,14 +277,16 @@ class ClearMLTracker:
 
     def log_plots(
         self,
-        evaluation: Evaluation,
+        evaluation: "Evaluation",
         *,
         artifacts_dir: str = "metrics/",
         iteration: int = 0,
     ) -> None:
         """Report the CI PNGs as images and the confusion matrix as a CM plot."""
-        for metric in _CI_PLOT_METRICS:
-            plot_path = os.path.join(artifacts_dir, f"{metric}_confidence_intervals.png")
+        for metric in _CI_PLOT_METRICS if evaluation.metrics else ():
+            plot_path = os.path.join(
+                artifacts_dir, f"{metric}_confidence_intervals_{evaluation.suffix}.png"
+            )
             if os.path.exists(plot_path):
                 self._logger.report_image(
                     title="confidence_intervals",
@@ -342,7 +342,7 @@ class ClearMLTracker:
             self.task.mark_completed()
         self.task.close()
 
-    def __enter__(self) -> ClearMLTracker:
+    def __enter__(self) -> "ClearMLTracker":
         return self
 
     def __exit__(
@@ -351,4 +351,27 @@ class ClearMLTracker:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        if exc is None:
+            self.close()
+        else:
+            # Close the SDK watchdog before transitioning the completed task to
+            # failed. Marking a live main task failed can self-abort the process.
+            try:
+                self.detach_loguru()
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to detach ClearML logging: {cleanup_error}")
+            try:
+                self.task.close()
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to close ClearML task: {cleanup_error}")
+                # Without confirmed shutdown a failed transition can make the
+                # still-active watchdog terminate the caller's process.
+                return
+            try:
+                failed_task = self.task
+                fetch = getattr(type(self.task), "get_task", None)
+                if fetch is not None:
+                    failed_task = fetch(task_id=self.task.id)
+                failed_task.mark_failed(force=True, status_reason=type(exc).__name__)
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to mark ClearML task failed: {cleanup_error}")

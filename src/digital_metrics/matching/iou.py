@@ -3,8 +3,8 @@ import numpy.typing as npt
 
 
 def compute_iou_matrix(
-    boxes_a: npt.NDArray[np.float32],
-    boxes_b: npt.NDArray[np.float32],
+    boxes_a: npt.NDArray[np.float32 | np.float64],
+    boxes_b: npt.NDArray[np.float32 | np.float64],
 ) -> npt.NDArray[np.float64]:
     """Compute pairwise IoU between two sets of bounding boxes.
 

@@ -3,6 +3,7 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+from scipy.integrate import trapezoid
 
 from ..matching import (
     MatchingStrategy,
@@ -12,6 +13,7 @@ from ..matching import (
     compute_iou_matrix,
 )
 from ..types import Metrics
+from ..validation import normalize_image_ids, validate_dataframes, validate_option
 
 _IOU_THRESHOLDS = [round(x, 2) for x in np.arange(0.50, 0.96, 0.05)]
 
@@ -55,6 +57,7 @@ def compute_ap(
     over 101 equally-spaced recall points.  Returns 0.0 when no predictions
     were made (empty recall array).
     """
+    validate_option("ap_method", method, ("interp", "continuous"))
     if method == "interp":
         if len(recall) == 0:
             return 0.0
@@ -62,7 +65,7 @@ def compute_ap(
         mpre = np.concatenate(([1.0], precision, [0.0]))
         mpre = np.flip(np.maximum.accumulate(np.flip(mpre)))
         x = np.linspace(0, 1, 101)
-        return float(np.trapezoid(np.interp(x, mrec, mpre), x))
+        return float(trapezoid(np.interp(x, mrec, mpre), x))
 
     # "continuous": VOC 2010+ rectangle-area integration
     mrec = np.concatenate(([0.0], recall, [1.0]))
@@ -170,6 +173,16 @@ def compute_map(
             ``"hungarian"`` (globally optimal per-image assignment via
             ``scipy.optimize.linear_sum_assignment``).
     """
+    validate_option("ap_method", method, ("interp", "continuous"))
+    validate_option("matching_strategy", strategy, ("greedy", "iou_prior", "hungarian"))
+    validate_dataframes(preds_df, gt_df)
+    if split_image_names is not None:
+        gt_df, preds_df, scope = normalize_image_ids(
+            gt_df, preds_df, pd.DataFrame({"image_name": split_image_names})
+        )
+        split_image_names = scope["image_name"].tolist()
+    else:
+        gt_df, preds_df = normalize_image_ids(gt_df, preds_df)
     x1, y1, x2, y2 = "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"
 
     split_images = _resolve_split_images(gt_df, split_image_names)

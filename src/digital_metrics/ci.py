@@ -20,11 +20,15 @@ def calculate_confidence_interval(
     Returns:
         (lower_bound, upper_bound) clamped to [0, 1].
     """
-    if total == 0:
-        return 0.0, 0.0
-
     if method != "wilson":
         raise ValueError(f"Unknown method: {method!r}. Only 'wilson' is supported.")
+
+    if not math.isfinite(confidence_level) or not 0 < confidence_level < 1:
+        raise ValueError("confidence_level must be finite and in (0, 1).")
+    if not math.isfinite(positives) or not math.isfinite(total) or not 0 <= positives <= total:
+        raise ValueError("Counts must be finite and satisfy 0 <= positives <= total.")
+    if total == 0:
+        return 0.0, 0.0
 
     z = st.norm.ppf(1 - (1 - confidence_level) / 2)
     p = positives / total

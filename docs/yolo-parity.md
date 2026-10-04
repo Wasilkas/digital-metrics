@@ -1,61 +1,47 @@
-[← Documentation index](README.md) · [🇷🇺 Русская версия](yolo-parity.ru.md)
+# Backend-specific detection matching and AP
 
-# Reproducing YOLO metrics
+Native `Evaluation` supports independent greedy, IoU-prior and Hungarian
+assignment. Native `iou_prior` is not an exact Ultralytics validator replica.
+Ultralytics uses its validator assignment and AP integration; TorchMetrics uses
+COCO confidence-ordered matching, precision envelopes and maxDet limits.
+Therefore neither identical inputs nor an identically named integration method
+guarantees backend AP parity.
 
-To get numbers that line up as closely as possible with an Ultralytics
-`model.val()` run, mirror the model's inference config and pick the YOLO-style
-options:
+For backend comparisons, score the same complete GT and prediction scope with
+the same backend and installed backend version. Confidence filtering and NMS can
+change matching, prediction ordering and the resulting AP curve. A threshold
+only leaves AP unchanged in the optional backend APIs that explicitly compute AP
+from the full prediction set while separately computing retained counts.
 
 ```python
+from digital_metrics import Evaluation, ScoringConfig, PreprocessConfig
+
 ev = Evaluation(
-    preds_df,
-    split_df,
-    iou_threshold=0.5,                       # report P/R/F1 at IoU 0.50 (mAP50 operating point)
-    preprocess_preds_conf_threshold=0.001,   # same minimum confidence as the model config
-    preprocess_preds_nms_iou_threshold=0.7,  # same NMS IoU as the model config
-    ap_method="interp",                      # 101-point trapezoid integration (COCO / Ultralytics)
-    confidence_optimization="global",        # one confidence threshold for all classes
+    preds_df, split_df, backend="ultralytics",
+    scoring=ScoringConfig(confidence_optimization="per_class"),
+    preprocessing=PreprocessConfig(),
 )
 ev(split="test", calibration_split="val")
 ```
 
-- **`preprocess_preds_conf_threshold` / `preprocess_preds_nms_iou_threshold`** —
-  set these to the `conf` and `iou` values from your YOLO config (val defaults
-  are `conf=0.001`, `iou=0.7`) so predictions enter matching at the same
-  operating point the model used. If `preds_df` was *exported* from the model
-  (NMS already applied), you can leave the NMS threshold at `None` — re-applying
-  it is just a safety net for cross-class duplicates.
-- **`ap_method="interp"`** — the 101-point trapezoid integral (`np.trapezoid`)
-  is exactly how Ultralytics computes AP. This is the library default.
-- **`confidence_optimization="global"`** — YOLO applies a single confidence
-  threshold to every class, chosen from the mean-F1 curve.
-- **`matching_strategy="iou_prior"`** is the default and mirrors Ultralytics'
-  internal IoU-sorted assignment. `"greedy"` is the alternative YOLO-style
-  confidence-sorted rule and differs by ~0.006 mAP50 on the fixture data.
+Calibration selects an observed confidence and keeps every score `>=` that
+threshold. It resolves equal objectives to the highest threshold. Thresholded
+P/R/F1 carry observed TP/FP/FN; unthresholded backend summary readouts are not
+observed counts. COCO limits retained detections to 100 per image/class; this
+limit is not imposed on Ultralytics input DataFrames.
 
-## Why other parameters are not a problem
+See [the detailed explanation](why_prf1_differs.md) and
+[dated verification](review-remediation-2026-10-04.md). The small checked-in CSVs
+are synthetic examples; historical dataset aggregate parity claims are not
+asserted to be reproducible from them.
 
-The library is intentionally more flexible than YOLO, and deviating from the
-recipe above does **not** make the metrics wrong — it just changes the lens:
 
-- **mAP is invariant to the operating-point knobs.** `mAP50/75/50-95` are always
-  computed on the raw, unfiltered predictions over the *entire* precision–recall
-  curve, so `preprocess_preds_conf_threshold`, the NMS thresholds and
-  `confidence_optimization` have **no effect** on mAP. Those knobs only move the
-  single point at which precision/recall/F1 and the confusion matrix are
-  reported — every choice yields a valid operating point on the same curve.
-- **The AP method barely matters.** `"interp"` (COCO trapezoid, the default) and
-  `"continuous"` (exact VOC rectangle area) agree to ≤ 0.001 on the fixture; both
-  are standard definitions, so either is defensible.
-- **Per-class confidence can only match or beat global.** Global thresholding is
-  the constrained special case of per-class (one shared value vs. the best value
-  per class), so `"per_class"` gives an equal-or-higher mean F1 and a finer
-  operating point — without touching mAP.
-- **All matching strategies are valid assignment rules.** greedy / iou_prior /
-  hungarian differ only marginally on mAP; pick by intent (greedy/iou_prior for
-  YOLO parity, hungarian for annotation audits).
-
-In short: use the recipe when you need figures directly comparable to an
-Ultralytics run; otherwise the defaults (or per-class confidence) give a richer,
-often more favourable view while keeping mAP exactly as comparable.
-
+Ultralytics `per_class` calibration uses deterministic coordinate ascent on the
+realized whole-image macro-F1 when mixed-class IoU ties couple thresholds. Other
+thresholds stay fixed during each sweep; candidates are the current class's
+observed scores plus the highest dataset score. Sweeps repeat until no coordinate
+improves, preferring higher thresholds on equal objectives. This guarantees a
+coordinate-local optimum on that grid, without exhaustive joint optimality.
+Global scalar calibration and independent COCO per-class calibration remain exact
+on their observed-score grids. Cached IoUs and affected-image updates keep the
+coordinate search from rematching unrelated images at every candidate.

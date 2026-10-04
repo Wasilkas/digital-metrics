@@ -54,6 +54,6 @@ def test_get_dashboards_creates_missing_directory(tmp_path: Path) -> None:
     ev.get_dashboards(save_to_excel=True, path=str(target), save_confusion_matrix=True)
 
     files = set(os.listdir(target))
-    assert "recall_confidence_intervals.png" in files
+    assert "recall_confidence_intervals_default.png" in files
     assert "full_dashboard_default.xlsx" in files
     assert "matrix_default.xlsx" in files
