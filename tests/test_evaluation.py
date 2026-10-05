@@ -81,9 +81,8 @@ def test_validate_df_raises_on_missing_column(
 ) -> None:
     gt_df, preds_df = tiny_dataset
     preds_bad = preds_df.drop(columns=["confidence"])
-    ev = Evaluation(preds_bad, gt_df, iou_threshold=0.5)
     with pytest.raises(ValueError, match="confidence"):
-        ev(split="all")
+        Evaluation(preds_bad, gt_df, iou_threshold=0.5)
 
 
 def test_validate_df_raises_on_missing_gt_column(
@@ -91,9 +90,8 @@ def test_validate_df_raises_on_missing_gt_column(
 ) -> None:
     gt_df, preds_df = tiny_dataset
     gt_bad = gt_df.drop(columns=["instance_label"])
-    ev = Evaluation(preds_df, gt_bad, iou_threshold=0.5)
     with pytest.raises(ValueError, match="instance_label"):
-        ev(split="all")
+        Evaluation(preds_df, gt_bad, iou_threshold=0.5)
 
 
 def test_validate_df_raises_on_na_confidence(
@@ -102,9 +100,8 @@ def test_validate_df_raises_on_na_confidence(
     gt_df, preds_df = tiny_dataset
     preds_bad = preds_df.copy()
     preds_bad.loc[0, "confidence"] = float("nan")
-    ev = Evaluation(preds_bad, gt_df, iou_threshold=0.5)
     with pytest.raises(ValueError, match="confidence.*NA"):
-        ev(split="all")
+        Evaluation(preds_bad, gt_df, iou_threshold=0.5)
 
 
 def test_unknown_pred_class_is_dropped(
@@ -265,9 +262,8 @@ def test_calibration_split_overlap_raises(
     leaked_rows["split"] = "val"
     leaked_gt = pd.concat([gt_df, leaked_rows], ignore_index=True)
 
-    ev = Evaluation(preds_df, leaked_gt, iou_threshold=0.5)
-    with pytest.raises(ValueError, match="shares"):
-        ev(split="test", calibration_split="val")
+    with pytest.raises(ValueError, match="one split"):
+        Evaluation(preds_df, leaked_gt, iou_threshold=0.5)
 
 
 # ---------------------------------------------------------------------------

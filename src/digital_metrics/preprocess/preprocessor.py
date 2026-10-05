@@ -8,11 +8,10 @@ untouched). The class is pure — it reads a frame and returns a new one — so 
 is easy to test in isolation.
 """
 
-from __future__ import annotations
-
 import pandas as pd
 from loguru import logger
 
+from ..validation import REQUIRED_COLS_GT, validate_dataframes, validate_iou
 from .nms import apply_nms, filter_by_confidence
 
 # Sentinel passed to apply_nms to disable a suppression type (threshold > 1 can
@@ -43,6 +42,9 @@ class PredictionPreprocessor:
                 box is removed when two different-class boxes have
                 ``IoU >= threshold``. ``None`` disables cross-class NMS.
         """
+        for value in (conf_threshold, nms_containment_threshold, nms_iou_threshold):
+            if value is not None:
+                validate_iou(value)
         self._conf_threshold = conf_threshold
         self._nms_containment_threshold = nms_containment_threshold
         self._nms_iou_threshold = nms_iou_threshold
@@ -62,6 +64,7 @@ class PredictionPreprocessor:
         When no threshold is configured this is a no-op and the frame is returned
         unchanged. Each suppression step logs how many rows it removed.
         """
+        validate_dataframes(preds_df, pd.DataFrame(columns=sorted(REQUIRED_COLS_GT)))
         result = preds_df
         if self._conf_threshold is not None:
             n_before = len(result)

@@ -1,9 +1,9 @@
+from collections.abc import Hashable
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-from sklearn.metrics import confusion_matrix
 
 from ..types import PredictMatch
 
@@ -21,24 +21,36 @@ def get_confusion_matrix(
     Returns:
         (cm, class_labels) where cm has shape (n+1, n+1) including background.
     """
-    true_labels: list[str] = []
-    pred_labels: list[str] = []
-
-    for c in classes:
-        for match in matches.get(c, []):
-            true_labels.append(match.gt_label)
-            pred_labels.append(match.pred_label)
-
+    if "background" in classes:
+        raise ValueError("'background' is reserved for unmatched detections.")
     class_labels = list(classes) + ["background"]
-    cm: npt.NDArray[np.int64] = confusion_matrix(true_labels, pred_labels, labels=class_labels)
+    positions = {c: i for i, c in enumerate(class_labels)}
+    cm = np.zeros((len(class_labels), len(class_labels)), dtype=np.int64)
+    records = [m for c in classes for m in matches.get(c, [])]
+    # Correct detections claim their GT first. Then at most one wrong-class
+    # prediction claims each remaining GT; excess detections are background FPs.
+    claimed = {m.gt_index for m in records if m.type == "TP"}
+    for m in records:
+        if m.type == "FN":
+            continue
+        true = m.gt_label
+        if m.type == "FP" and true != "background":
+            if m.gt_index in claimed:
+                true = "background"
+            else:
+                claimed.add(m.gt_index)
+        cm[positions[true], positions[m.pred_label]] += 1
+    for m in records:
+        if m.type == "FN" and m.gt_index not in claimed:
+            cm[positions[m.gt_label], positions["background"]] += 1
     return cm, class_labels
 
 
 def _get_boxes_to_save(
     preds_df: pd.DataFrame,
     gt_df: pd.DataFrame,
-    gt_index: int,
-    pred_index: int,
+    gt_index: Hashable,
+    pred_index: Hashable,
 ) -> list[dict[str, Any]]:
     """Build annotation-audit records for a single match."""
     fields = ["instance_label", "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br", "image_name"]
@@ -47,7 +59,10 @@ def _get_boxes_to_save(
     if pred_index != -1:
         pred_to_save: dict[str, Any] = {
             str(k): v
-            for k, v in preds_df.loc[pred_index][fields + ["confidence"]].to_dict().items()
+            for k, v in preds_df.loc[[pred_index]]
+            .iloc[0][fields + ["confidence"]]
+            .to_dict()
+            .items()
         }
         predict_type = "fp" if gt_index != -1 else "bg"
         pred_to_save["type"] = f"predict_{predict_type}"
@@ -55,7 +70,7 @@ def _get_boxes_to_save(
 
     if gt_index != -1:
         gt_to_save: dict[str, Any] = {
-            str(k): v for k, v in gt_df.loc[gt_index][fields].to_dict().items()
+            str(k): v for k, v in gt_df.loc[[gt_index]].iloc[0][fields].to_dict().items()
         }
         gt_to_save["type"] = "gt" if pred_index != -1 else "fn"
         gt_to_save["confidence"] = 1

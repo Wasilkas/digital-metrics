@@ -62,3 +62,22 @@ gt_vis, pred_vis = ev.get_dfs_visualization()
 gt_vis, pred_vis = ev.get_dfs_visualization(apply_thresholds=True)
 ```
 
+
+## Input and reporting boundaries
+
+Row labels remain intact through matching, preprocessing and visualization. They
+must be unique, nonmissing hashable values distinct from the unmatched sentinel
+`-1`. Numeric image IDs are normalized to strings; lossy collisions are rejected,
+and a normalized image ID may belong to only one split. Class `background` is
+reserved. Only rows with both missing labels and entirely missing coordinates
+represent empty-image GT placeholders. Malformed labelled boxes and nonfinite or
+out-of-range confidences are rejected before filtering or suppression.
+
+Visualization contains only the evaluated image scope. Every dashboard artifact,
+including CI PNGs, carries the requested filename suffix. Class labels in Excel
+are literal strings. CI plots recompute the requested confidence coverage from
+current observed counts; unknown reconstructed counts do not get intervals.
+
+If ClearML SDK closure fails while handling a computation error, the original exception is
+preserved and logged cleanup failures remain visible. Failure status is not forced while the
+SDK watchdog may still be active; remote terminal status is then unavailable.

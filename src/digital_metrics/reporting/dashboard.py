@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import os
 
 import matplotlib.pyplot as plt
@@ -10,12 +8,25 @@ from loguru import logger
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
+from ..ci import calculate_confidence_interval
 from ..types import Metrics
 
 
 def _metrics_as_df(metrics: dict[str, Metrics]) -> pd.DataFrame:
     metrics_dict = {k: v.model_dump() for k, v in metrics.items()}
-    return pd.DataFrame.from_dict(metrics_dict, orient="index")
+    columns = list(Metrics().model_dump())
+    return pd.DataFrame.from_dict(metrics_dict, orient="index").reindex(columns=columns)
+
+
+def _write_literal_excel(frame: pd.DataFrame, path: str) -> None:
+    """Preserve every string, including label indices and CM headers, as text."""
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        frame.to_excel(writer)
+        for sheet in writer.book.worksheets:
+            for row in sheet.iter_rows():
+                for cell in row:
+                    if isinstance(cell.value, str):
+                        cell.data_type = "s"
 
 
 def get_dashboards(
@@ -49,12 +60,12 @@ def get_dashboards(
     # Create the output directory up front: the CI plots below are saved into it.
     os.makedirs(path, exist_ok=True)
 
-    for metric_name in ("recall", "precision", "perebrak", "nedobrak"):
+    for metric_name in ("recall", "precision", "perebrak", "nedobrak") if metrics else ():
         plot_confidence_intervals(
             metrics=metrics,
             metric=metric_name,
             confidence_level=0.95,
-            save_path=os.path.join(path, f"{metric_name}_confidence_intervals.png"),
+            save_path=os.path.join(path, f"{metric_name}_confidence_intervals_{suffix}.png"),
             figsize=(12, 8),
         )
 
@@ -118,11 +129,11 @@ def get_dashboards(
 
     if save_confusion_matrix and cm is not None:
         cm_df = pd.DataFrame(cm, index=class_labels, columns=class_labels)
-        cm_df.to_excel(os.path.join(path, f"matrix_{suffix}.xlsx"))
+        _write_literal_excel(cm_df, os.path.join(path, f"matrix_{suffix}.xlsx"))
 
     if save_to_excel:
-        devs.to_excel(os.path.join(path, f"full_dashboard_{suffix}.xlsx"))
-        dtrk.to_excel(os.path.join(path, f"метрики_дтрк_{suffix}.xlsx"))
+        _write_literal_excel(devs, os.path.join(path, f"full_dashboard_{suffix}.xlsx"))
+        _write_literal_excel(dtrk, os.path.join(path, f"метрики_дтрк_{suffix}.xlsx"))
 
     logger.info("Save complete.")
     return devs, dtrk
@@ -140,13 +151,16 @@ def plot_confidence_intervals(
     Args:
         metrics: Per-class Metrics objects.
         metric: One of "precision", "recall", "perebrak", "nedobrak".
-        confidence_level: Desired CI level (unused here; CIs come from Metrics).
+        confidence_level: Statistical coverage of the plotted Wilson intervals.
         save_path: Path to save the PNG; if None, the plot is displayed.
         figsize: Figure size in inches.
 
     Returns:
         (fig, ax) matplotlib objects, or (None, None) if metrics is empty.
     """
+    calculate_confidence_interval(0, 0, confidence_level=confidence_level)
+    if metric not in ("precision", "recall", "perebrak", "nedobrak"):
+        raise ValueError(f"Unsupported metric: {metric!r}")
     if not metrics:
         logger.error("Metrics have not been computed yet. Run evaluation first.")
         return None, None
@@ -158,16 +172,16 @@ def plot_confidence_intervals(
 
     for class_name in class_names:
         m = metrics[class_name]
-        if metric == "precision":
-            val, lower, upper = m.precision, m.precision_ci_lower, m.precision_ci_upper
-        elif metric == "recall":
-            val, lower, upper = m.recall, m.recall_ci_lower, m.recall_ci_upper
-        elif metric == "perebrak":
-            val, lower, upper = m.perebrak, m.perebrak_ci_lower, m.perebrak_ci_upper
-        elif metric == "nedobrak":
-            val, lower, upper = m.nedobrak, m.nedobrak_ci_lower, m.nedobrak_ci_upper
-        else:
-            raise ValueError(f"Unsupported metric: {metric!r}")
+        positives = m.tp
+        total = m.tp + (m.fp if metric in ("precision", "perebrak") else m.fn)
+        lower, upper = (
+            calculate_confidence_interval(positives, total, confidence_level=confidence_level)
+            if m.counts_observed
+            else (float("nan"), float("nan"))
+        )
+        val = m.precision if metric in ("precision", "perebrak") else m.recall
+        if metric in ("perebrak", "nedobrak"):
+            val, lower, upper = 1 - val, 1 - upper, 1 - lower
 
         means.append(val)
         lowers.append(max(0.0, val - lower))

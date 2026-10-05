@@ -1,4 +1,4 @@
-from functools import cached_property
+from collections.abc import Hashable
 
 from pydantic import BaseModel, ConfigDict, computed_field
 from pydantic.fields import Field
@@ -9,10 +9,12 @@ from .ci import calculate_confidence_interval
 class PredictMatch(BaseModel):
     """A single pred→GT matching record produced by box matching."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     pred_label: str
     gt_label: str
-    pred_index: int
-    gt_index: int
+    pred_index: Hashable
+    gt_index: Hashable
     confidence: float
     iou: float | None = None
     """IoU between the prediction and the ground-truth box it is associated with
@@ -44,6 +46,10 @@ class DetectionMetrics(BaseModel):
     AP over the ten COCO IoU thresholds (0.50…0.95).
     """
 
+    tp: int | None = None
+    fp: int | None = None
+    fn: int | None = None
+
     precision: float
     recall: float
     f1: float
@@ -57,6 +63,7 @@ class Metrics(BaseModel):
 
     model_config = ConfigDict(frozen=False)
 
+    counts_observed: bool = True
     tp: float = Field(default=0)
     fp: float = Field(default=0)
     fn: float = Field(default=0)
@@ -66,14 +73,22 @@ class Metrics(BaseModel):
     ap50_95: float = Field(default=0)
     cohen_kappa: float = Field(default=0)
 
-    # Private CI caches — computed once; lower/upper properties read from here.
-    @cached_property
+    # Read current mutable counts every time, including during serialization.
+    @property
     def _precision_ci(self) -> tuple[float, float]:
-        return calculate_confidence_interval(self.tp, self.tp + self.fp)
+        return (
+            calculate_confidence_interval(self.tp, self.tp + self.fp)
+            if self.counts_observed
+            else (float("nan"), float("nan"))
+        )
 
-    @cached_property
+    @property
     def _recall_ci(self) -> tuple[float, float]:
-        return calculate_confidence_interval(self.tp, self.tp + self.fn)
+        return (
+            calculate_confidence_interval(self.tp, self.tp + self.fn)
+            if self.counts_observed
+            else (float("nan"), float("nan"))
+        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property

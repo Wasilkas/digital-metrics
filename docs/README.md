@@ -13,7 +13,7 @@ Full documentation for [`digital-metrics`](../README.md).
 | [Box matching strategies](matching.md) | `iou_prior` / `greedy` / `hungarian` and when to use each |
 | [Predictions preprocessing](preprocessing.md) | Confidence filtering and custom NMS before scoring |
 | [Transliterated model labels](transliteration.md) | Restoring Cyrillic GT labels from a transliterated model vocabulary |
-| [Reproducing YOLO metrics](yolo-parity.md) | Settings that make the native pipeline track Ultralytics |
+| [Reproducing YOLO metrics](yolo-parity.md) | Backend-specific matching, AP and retained-count contracts |
 | [External metrics backends](backends.md) | `ultralytics` / `torchmetrics` backends and `Evaluation(backend=...)` |
 | [YOLO inference](inference.md) | Generating predictions from weights with `predict_to_dataframe` |
 | [Outputs](outputs.md) | `Metrics` fields, Excel dashboards, CI plots, error audit |

@@ -1,0 +1,4 @@
+,image_name,instance_label,bbox_x_tl,bbox_y_tl,bbox_x_br,bbox_y_br,split
+0,val-positive,cat,0.0,0.0,10.0,10.0,val
+1,test-positive,cat,0.0,0.0,10.0,10.0,test
+2,test-negative,,,,,,test

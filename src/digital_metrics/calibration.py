@@ -23,7 +23,12 @@ from .types import PredictMatch
 
 
 class ConfidenceCalibrator:
-    """Choose confidence thresholds for the native evaluation pipeline."""
+    """Choose confidence thresholds for the native evaluation pipeline.
+
+    BackendEngine applies its own calibration: exact scalar global and
+    independent COCO per-class searches, or deterministic coordinate-local
+    realized macro-F1 refinement for mixed-class Ultralytics per-class ties.
+    """
 
     def __init__(
         self,

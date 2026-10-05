@@ -24,10 +24,11 @@ for cls, m in yolo.items():
           f"mAP50={m.ap50:.3f} mAP50-95={m.ap50_95:.3f}")
 ```
 
-- **`backend="ultralytics"`** (по умолчанию) — сравнимо с YOLO. Рамки
-  сопоставляются и оцениваются собственным `ap_per_class` из Ultralytics, поэтому
-  AP совпадает с `model.val()`. P/R/F1 считываются при IoU 0.50 в единой
-  глобальной рабочей точке максимума среднего F1.
+- **`backend="ultralytics"`** (по умолчанию) использует сопоставление установленной
+  версии валидатора Ultralytics и интегрирование AP через `ap_per_class`.
+  Эквивалентность `model.val()` требует одинакового охвата и порядка GT/детекций,
+  предобработки и версии бэкенда. Без явных порогов P/R/F1 считываются при IoU 0.50
+  в собственной глобальной рабочей точке максимума среднего F1.
 - **`backend="torchmetrics"`** — общий COCO mAP через `MeanAveragePrecision`
   из torchmetrics (pycocotools). AP — это собственные `map_50 / map_75 / map`
   torchmetrics по классам; P/R/F1 выводятся по его P-R кривой при IoU 0.50 в
@@ -90,17 +91,23 @@ coco = ev.compute_metrics_torchmetrics(split="test")
   `"torchmetrics"` считают метрики сплита по **исходным** предсказаниям (как
   `model.val()`); `find_best_confs` и пороги предобработки в этом режиме не
   применяются.
-- **Калибровка** — по умолчанию бэкенд сам выбирает рабочую точку на оцениваемом
-  сплите (in-sample). Передайте `calibration_split="val"`, и бэкенд будет
-  отчитывать P/R/F1 в точке F1-оптимальной уверенности, найденной на `val`,
-  считывая её по своим per-class кривым; **AP остаётся по всей кривой**, а
-  выбранные пороги попадают в `ev.best_confidences`. `confidence_optimization`
-  выбирает `"per_class"` или `"global"` пороги — как и в нативном пути.
-  **Поддерживают оба бэкенда** — `"ultralytics"` читает по кривым `ap_per_class`,
-  `"torchmetrics"` — по кривым precision/score при IoU 0.50 из `extended_summary`.
-  Те же механизмы доступны отдельно: `find_ultralytics_confidence` /
-  `find_torchmetrics_confidence` (с `mode=...`) и
-  `compute_*_metrics(..., conf_threshold=...)`.
+- **Калибровка** — `calibration_split="val"` выбирает реализуемые пороги по
+  группам одинаковой исходной уверенности, с наибольшим порогом при равном F1.
+  `global` и независимый `per_class` COCO находят точный максимум на сетке
+  наблюдаемых confidence. Для смешанных классов Ultralytics `per_class` применяет
+  детерминированный покоординатный поиск по фактическому macro-F1: остальные
+  пороги фиксированы, перебираются confidence текущего класса и максимальный
+  confidence набора. Поиск повторяется до отсутствия улучшений одной координаты;
+  при равном результате принимается только более высокий порог. Это локальный
+  покоординатный максимум, без гарантии глобального совместного оптимума.
+  Порядок классов задан словарём; без смешанных классов уточнение не требуется.
+  P/R/F1 и
+  TP/FP/FN описывают сохранённые детекции с сопоставлением выбранного бэкенда;
+  AP остаётся по полному набору предсказаний. IoU кешируется: COCO обновляет
+  затронутую пару изображения и класса; Ultralytics сопоставляет всё затронутое
+  изображение с исходным порядком строк разных классов, включая равные IoU. COCO использует
+  координаты и стабильную сортировку confidence в float32, как адаптер AP;
+  условие confidence >= порог проверяется по исходным значениям.
 
   ```python
   ev = Evaluation(preds_df, split_df, backend="ultralytics",
@@ -109,8 +116,8 @@ coco = ev.compute_metrics_torchmetrics(split="test")
   ```
 - `ev.detection_metrics` хранит нетронутый вывод бэкенда; `ev.metrics` — те же
   precision / recall / f1 / AP, **адаптированные к нативным `Metrics`**: TP/FP/FN
-  восстанавливаются как дробные числа из количества эталонных рамок класса, чтобы
-  дашборды и графики CI продолжали работать. В этом режиме `cohen_kappa` равен
+  точны при явных порогах. Без них совместимые дробные счётчики помечены
+  `counts_observed=False`, а интервалы Wilson недоступны (NaN). В этом режиме `cohen_kappa` равен
   `-1`, а порог `confidence` по классу — `0.0`, если его не задал
   `calibration_split`.
 - **Матрица ошибок** — бэкенд `"ultralytics"` заполняет `ev.cm` / `ev.class_labels`
@@ -121,3 +128,11 @@ coco = ev.compute_metrics_torchmetrics(split="test")
   `None`, и `get_dashboards` пропускает этот лист. Отдельная функция
   `compute_ultralytics_confusion_matrix(gt_df, preds_df)` также публична.
 
+
+## Updated backend contracts
+
+AP is backend-specific; native, Ultralytics and COCO matching and limits differ.
+Explicit thresholds retain confidence >= t and report observed TP/FP/FN.
+Unthresholded backend summaries have no observed counts; compatibility Metrics
+set counts_observed=False and Wilson intervals to NaN. TorchMetrics >=1.3.1 is
+the tested minimum. See [the current comparison](why_prf1_differs.md).

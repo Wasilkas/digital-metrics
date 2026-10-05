@@ -156,14 +156,10 @@ _PRED_COLS = [*_GT_COLS, "confidence"]
 
 
 def test_nan_gt_row_does_not_misattribute_match() -> None:
-    """A GT row with a NaN coordinate must not desync matrix columns from gt rows.
-
-    Regression: the class_b prediction perfectly matches the class_b GT, so it
-    must be a TP for class_b — not an FP attributed to the dropped class_a row.
-    """
+    """Reject a malformed labelled GT instead of silently changing the positive count."""
     gt_df = pd.DataFrame(
         [
-            ("img", "class_a", np.nan, 0, 100, 100),  # invalid GT row, dropped
+            ("img", "class_a", np.nan, 0, 100, 100),  # invalid labelled GT row
             ("img", "class_b", 0, 0, 100, 100),
         ],
         columns=_GT_COLS,
@@ -172,10 +168,8 @@ def test_nan_gt_row_does_not_misattribute_match() -> None:
         [("img", "class_b", 0, 0, 100, 100, 0.9)],
         columns=_PRED_COLS,
     )
-    matches = match_boxes(gt_df, preds_df, iou_threshold=0.5, strategy="greedy")
-    assert _count(matches, "class_b", "TP") == 1
-    assert _count(matches, "class_b", "FP") == 0
-    assert _count(matches, "class_a", "FP") == 0  # no phantom mismatch on dropped row
+    with pytest.raises(ValueError, match="complete finite"):
+        match_boxes(gt_df, preds_df, iou_threshold=0.5, strategy="greedy")
 
 
 @pytest.mark.parametrize("strategy", ["greedy", "iou_prior", "hungarian"])

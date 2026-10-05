@@ -170,3 +170,19 @@ def test_loguru_sink_attaches_and_detaches() -> None:
     tracker.close()
     assert tracker._sink_id is None
     assert task.closed
+
+
+def test_empty_evaluation_does_not_publish_stale_confidence_plots(tiny_dataset, tmp_path) -> None:
+    gt, preds = tiny_dataset
+    gt = gt.iloc[:1].copy()
+    gt[["instance_label", "bbox_x_tl", "bbox_y_tl", "bbox_x_br", "bbox_y_br"]] = None
+    evaluation = Evaluation(preds.iloc[:0], gt, preprocess=False)
+    evaluation("test")
+    assert not evaluation.metrics
+    for metric in ("precision", "recall", "perebrak", "nedobrak"):
+        (tmp_path / f"{metric}_confidence_intervals_{evaluation.suffix}.png").write_bytes(b"stale")
+    task = _FakeTask()
+    tracker = ClearMLTracker(task=task, attach_logs=False)
+    tracker.log_evaluation(evaluation, artifacts_dir=str(tmp_path))
+    assert task.get_logger().images == []
+    assert len(task.get_logger().confusion_matrices) == 1

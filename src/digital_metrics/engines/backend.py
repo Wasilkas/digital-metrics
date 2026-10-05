@@ -1,7 +1,5 @@
 """Backend scoring engine: scores via an external library (ultralytics/torchmetrics)."""
 
-from __future__ import annotations
-
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
@@ -27,8 +25,9 @@ class BackendEngine:
     """Score a split through an external metrics library, adapted to native ``Metrics``.
 
     The raw backend output is kept as ``detection_metrics``; ``metrics`` holds the
-    same numbers reconstructed onto :class:`Metrics` so the dashboards/CI plots keep
-    working. Both backends support calibration on a held-out split. The
+    backend results adapted onto :class:`Metrics` for reporting, with observed
+    counts and intervals only when explicit thresholds are used. Both backends
+    support calibration on a held-out split. The
     ``"ultralytics"`` backend also fills the confusion matrix; ``"torchmetrics"``
     has none.
     """
@@ -73,6 +72,8 @@ class BackendEngine:
             detection_metrics, best_confidences = self._calibrate(inputs, split_image_names)
 
         metrics = self._adapt(detection_metrics, gt_df)
+        for name, metric in metrics.items():
+            metric.confidence = best_confidences.get(name, 0.0)
 
         cm: npt.NDArray[np.int64] | None
         if self._backend == "ultralytics":
@@ -98,11 +99,12 @@ class BackendEngine:
     ) -> tuple[dict[str, DetectionMetrics], dict[str, float]]:
         """Backend metrics with the operating point calibrated on a split.
 
-        Finds the F1-optimal confidence on ``calibration_split`` (per the configured
-        ``confidence_optimization`` mode), then reads the eval split's P/R/F1 at that
-        confidence while AP stays over the full curve, and returns the chosen
-        threshold(s) as ``best_confidences``. Works for both backends — each reads
-        P/R/F1 off its own confidence curve.
+        Selects realizable thresholds on the calibration split, then reports
+        exact retained TP/FP/FN and P/R/F1 on the evaluation split. Scalar global
+        calibration and independent COCO per-class calibration are exact on the
+        observed-score grid. Mixed-class Ultralytics per-class calibration finds
+        a deterministic coordinate-local realized macro-F1 optimum; it does not
+        enumerate the joint threshold grid. AP uses the complete predictions.
         """
         assert inputs.calibration_split is not None
         gt_df = inputs.gt_df
@@ -151,37 +153,36 @@ class BackendEngine:
     ) -> dict[str, Metrics]:
         """Map external ``DetectionMetrics`` onto native ``Metrics`` for the dashboards.
 
-        The backends report only precision/recall/f1 and AP at a self-selected
-        operating point — no box-level TP/FP/FN. We reconstruct float counts from
-        the per-class ground-truth size ``N`` (= TP + FN, known from ``gt_df``) so
-        the reproduced precision/recall/f1 equal the backend's exactly::
-
-            TP = recall * N        FN = N - TP        FP = TP * (1 - p) / p   (p > 0)
-
-        Wilson CIs then follow from these counts — the recall CI is grounded in the
-        true ``N``; the precision CI is approximate because FP is reconstructed, not
-        counted. ``cohen_kappa`` is set to ``-1`` (not provided by external
-        backends) and the confidence threshold to ``0.0`` (the operating point is
-        internal to the backend). Classes with no GT in the split get NaN AP,
-        matching the native convention.
+        Explicit thresholds carry observed counts and Wilson intervals.
+        Unthresholded summaries reconstruct compatibility counts from recall,
+        precision and the GT size; those counts and missing summaries are marked
+        unavailable with ``counts_observed=False`` and NaN Wilson intervals.
+        ``cohen_kappa`` is unavailable (-1); ``run`` copies calibrated thresholds
+        into each resulting metric. Classes without GT retain NaN AP.
         """
         gt_counts = gt_df["instance_label"].value_counts().to_dict()
         result: dict[str, Metrics] = {}
         for c in self._classes:
             n_gt = int(gt_counts.get(c, 0))
             dm = detection_metrics.get(c)
-            if dm is None or n_gt == 0:
+            if dm is None:
                 result[c] = Metrics(
+                    counts_observed=False,
                     ap50=float("nan"),
                     ap75=float("nan"),
                     ap50_95=float("nan"),
                     cohen_kappa=-1,
                 )
                 continue
-            tp = dm.recall * n_gt
-            fn = n_gt - tp
-            fp = tp * (1.0 - dm.precision) / dm.precision if dm.precision > 0 else 0.0
+            tp = dm.tp if dm.tp is not None else dm.recall * n_gt
+            fn = dm.fn if dm.fn is not None else n_gt - tp
+            fp = (
+                dm.fp
+                if dm.fp is not None
+                else (tp * (1.0 - dm.precision) / dm.precision if dm.precision > 0 else 0.0)
+            )
             result[c] = Metrics(
+                counts_observed=dm.tp is not None and dm.fp is not None and dm.fn is not None,
                 tp=tp,
                 fp=fp,
                 fn=fn,

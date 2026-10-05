@@ -15,6 +15,8 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import linear_sum_assignment
 
+from ..validation import validate_iou
+
 # Matched (pred_index, gt_index) positional pairs.
 MatchedPairs = list[tuple[int, int]]
 
@@ -30,6 +32,7 @@ def assign_greedy(
     Each prediction claims its highest-IoU ground truth that is still free,
     clears ``iou_threshold`` and, when supplied, is allowed by ``valid_mask``.
     """
+    validate_iou(iou_threshold)
     n_preds, n_gts = iou_matrix.shape
     if n_gts == 0:
         return []
@@ -65,6 +68,7 @@ def assign_iou_prior(
     A stable sort is used so that ties in IoU resolve deterministically in
     favour of the lower (prediction, GT) index pair.
     """
+    validate_iou(iou_threshold)
     n_preds, n_gts = iou_matrix.shape
     if n_preds == 0 or n_gts == 0:
         return []
@@ -104,6 +108,7 @@ def assign_hungarian(
     possible IoU-sum improvement among fewer pairs. Invalid edges score zero
     and are discarded after the rectangular assignment is solved.
     """
+    validate_iou(iou_threshold)
     n_preds, n_gts = iou_matrix.shape
     if n_preds == 0 or n_gts == 0:
         return []

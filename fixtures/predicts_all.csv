@@ -1,0 +1,4 @@
+,image_name,instance_label,bbox_x_tl,bbox_y_tl,bbox_x_br,bbox_y_br,confidence
+0,val-positive,cat,0,0,10,10,0.9
+1,test-positive,cat,0,0,10,10,0.9
+2,test-negative,cat,0,0,10,10,0.4

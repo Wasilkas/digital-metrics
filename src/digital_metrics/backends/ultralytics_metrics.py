@@ -1,8 +1,8 @@
 """YOLO-exact metrics via Ultralytics' own ``ap_per_class``.
 
-This is an *optional* path: P/R/F1/AP are produced by Ultralytics' real metric
-code (``ultralytics.utils.metrics.ap_per_class``), not re-implemented here. We
-only assemble the inputs it expects and let it compute the numbers.
+This optional path uses Ultralytics' real ``ap_per_class`` for AP and
+unthresholded summary P/R/F1. Explicit thresholds use retained whole-image
+validator matches to report exact counts and realizable P/R/F1.
 
 The dependency is heavy (``ultralytics`` pulls in ``torch``) so it is not part of
 the core install. Enable it with::
@@ -20,7 +20,7 @@ How the inputs are built
   ``BaseValidator.match_predictions`` (non-scipy path, v8.4.70), which lives on
   the validator class and is not exposed standalone. This is *matching*, not a
   metric, so re-matching per threshold (rather than thresholding a single stored
-  IoU) keeps the result identical to ``model.val()``.
+  IoU) follows the installed validator semantics for the supplied inputs.
 * The resulting ``(n_pred, 10)`` correctness array, confidences, predicted
   classes and target classes are handed to ``ap_per_class``.
 
@@ -28,8 +28,6 @@ How Ultralytics defines the headline P/R/F1 (see ``ap_per_class``): built at IoU
 0.50, read off a 1000-point interpolated P-R curve at the single global
 confidence that maximises the smoothed mean per-class F1.
 """
-
-from __future__ import annotations
 
 from typing import Any, Literal
 
@@ -40,6 +38,7 @@ import pandas as pd
 from ..grouping import image_row_indices
 from ..types import DetectionMetrics
 from ..validation import drop_na_labels
+from .operating_points import calibrate_raw, complete_counts, prepare_inputs, raw_counts, raw_prf1
 
 # Backward-compatible alias: the YOLO-exact path historically returned its own
 # ``YoloMetrics`` model. It now shares the common :class:`DetectionMetrics`
@@ -132,6 +131,9 @@ def _ap_per_class_results(
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(_INSTALL_HINT) from exc
 
+    gt_df, preds_df, classes = prepare_inputs(gt_df, preds_df, classes, split_image_names)
+    if split_image_names is not None:
+        split_image_names = [str(name) for name in split_image_names]
     # Scope the images first, then drop the NA-label placeholder rows empty
     # images carry: the image stays in scope, but the row names no class.
     images: set[str] = set(gt_df["image_name"].unique())
@@ -224,18 +226,15 @@ def compute_ultralytics_metrics(
         split_image_names: Complete list of image names in the split, including
             empty images (no GT). Predictions on those images are counted as
             false positives. Defaults to the images present in ``gt_df``.
-        conf_threshold: Where to read P/R/F1 on the per-class P/R/F1-vs-confidence
-            curves. ``None`` (default) uses Ultralytics' own operating point (the
-            in-sample max-mean-F1 confidence). A ``float`` reads every class at
-            that shared confidence; a ``dict`` reads each class at its own (e.g. a
-            threshold calibrated on a held-out split via
-            :func:`find_ultralytics_confidence`). AP is always taken over the full
-            curve and is unaffected by ``conf_threshold``.
+        conf_threshold: ``None`` uses the backend's unthresholded summary.
+            A float or per-class dict retains original confidence >= threshold
+            and reports exact IoU-0.50 counts and P/R/F1 using ultralytics matching.
+            AP always uses the full prediction set.
 
     Returns:
-        ``{class_name: DetectionMetrics}`` for every class that has at least one
-        GT box in the split (classes absent from the GT are not scored, matching
-        Ultralytics).
+        Per-class DetectionMetrics. Unthresholded output includes GT classes;
+        explicit thresholds also include vocabulary classes absent from GT,
+        with observed counts and NaN AP.
 
     Raises:
         ImportError: If the optional ``ultralytics`` dependency is not installed.
@@ -245,32 +244,50 @@ def compute_ultralytics_metrics(
     )
     if results is None:
         if zero_classes is None:
-            return {}
+            return complete_counts(
+                {}, gt_df, preds_df, classes, split_image_names, conf_threshold, "ultralytics"
+            )
         # GT exists but no predictions at all → P/R/F1/AP are zero everywhere.
-        return {
+        empty_results = {
             idx_to_class[int(c)]: DetectionMetrics.model_construct(
                 precision=0.0, recall=0.0, f1=0.0, ap50=0.0, ap75=0.0, ap50_95=0.0
             )
             for c in zero_classes
         }
+        return complete_counts(
+            empty_results,
+            gt_df,
+            preds_df,
+            classes,
+            split_image_names,
+            conf_threshold,
+            "ultralytics",
+        )
 
     p, r, f1, ap = results[2], results[3], results[4], results[5]
     unique_classes = results[6]  # int class indices present as GT, sorted
-    p_curve, r_curve, f1_curve, x = results[7], results[8], results[9], results[10]
 
+    operating = (
+        raw_prf1(gt_df, preds_df, classes, split_image_names, conf_threshold, "ultralytics")
+        if conf_threshold is not None
+        else {}
+    )
+    counts = (
+        raw_counts(gt_df, preds_df, classes, split_image_names, conf_threshold, "ultralytics")
+        if conf_threshold is not None
+        else {}
+    )
     out: dict[str, DetectionMetrics] = {}
     for i, c in enumerate(unique_classes):
         name = idx_to_class[int(c)]
         if conf_threshold is None:
             p_i, r_i, f1_i = float(p[i]), float(r[i]), float(f1[i])
         else:
-            cval = (
-                conf_threshold.get(name, 0.0)
-                if isinstance(conf_threshold, dict)
-                else conf_threshold
-            )
-            p_i, r_i, f1_i = _read_prf1_at_conf(p_curve[i], r_curve[i], f1_curve[i], x, cval)
+            p_i, r_i, f1_i = operating[name]
         out[name] = DetectionMetrics(
+            tp=counts[name][0] if name in counts else None,
+            fp=counts[name][1] if name in counts else None,
+            fn=counts[name][2] if name in counts else None,
             precision=p_i,
             recall=r_i,
             f1=f1_i,
@@ -278,7 +295,9 @@ def compute_ultralytics_metrics(
             ap75=float(ap[i, _IOU75_COL]),
             ap50_95=float(ap[i].mean()),
         )
-    return out
+    return complete_counts(
+        out, gt_df, preds_df, classes, split_image_names, conf_threshold, "ultralytics"
+    )
 
 
 def find_ultralytics_confidence(
@@ -288,29 +307,31 @@ def find_ultralytics_confidence(
     split_image_names: list[str] | None = None,
     mode: Literal["global", "per_class"] = "global",
 ) -> float | dict[str, float]:
-    """Confidence threshold(s) maximising F1 on this split (calibration helper).
+    """Calibrate realizable thresholds using whole-image validator matching.
 
-    Reads Ultralytics' F1-vs-confidence curves from ``ap_per_class``:
-    ``"global"`` returns one threshold (max mean per-class F1, YOLO-style);
-    ``"per_class"`` returns ``{class_name: threshold}``. Feed the result to
+    ``"global"`` finds the exact highest max-macro-F1 scalar threshold.
+    ``"per_class"`` returns a dictionary. Mixed-class IoU ties couple its
+    thresholds, so deterministic coordinate ascent optimizes realized macro-F1
+    while holding other thresholds fixed, until no coordinate improves. Equal
+    objectives prefer higher thresholds. This is a coordinate-local optimum,
+    without a claim of exhaustive joint optimality. Class order is fixed by the
+    vocabulary; candidates are each class's observed scores plus the highest
+    dataset score. Datasets without mixed-class prediction images skip refinement.
+
+    Feed the result to
     :func:`compute_ultralytics_metrics` as ``conf_threshold=`` on another split to
     read P/R/F1 at the calibrated operating point ("calibrate on val, report on
-    test"). Returns ``0.0`` / ``{}`` when the split has no scorable detections.
+    test"). With no predictions, returns zero thresholds for present GT classes;
+    with no GT classes, returns ``0.0`` / ``{}``.
 
     Raises:
         ImportError: If the optional ``ultralytics`` dependency is not installed.
     """
-    results, idx_to_class, _ = _ap_per_class_results(gt_df, preds_df, classes, split_image_names)
-    if results is None:
-        return 0.0 if mode == "global" else {}
-
-    unique_classes = results[6]
-    f1_curve, x = results[9], results[10]
-    if mode == "global":
-        return _conf_at_max_f1(np.asarray(f1_curve).mean(0), x)
-    return {
-        idx_to_class[int(c)]: _conf_at_max_f1(f1_curve[i], x) for i, c in enumerate(unique_classes)
-    }
+    try:
+        from ultralytics.utils.metrics import ap_per_class  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(_INSTALL_HINT) from exc
+    return calibrate_raw(gt_df, preds_df, classes, split_image_names, mode, "ultralytics")
 
 
 # Ultralytics' plotted confusion matrix is built at these fixed operating points,
@@ -413,6 +434,9 @@ def compute_ultralytics_confusion_matrix(
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(_INSTALL_HINT) from exc
 
+    gt_df, preds_df, classes = prepare_inputs(gt_df, preds_df, classes, split_image_names)
+    if split_image_names is not None:
+        split_image_names = [str(name) for name in split_image_names]
     # Scope the images first, then drop the NA-label placeholder rows empty
     # images carry: the image stays in scope, but the row names no class.
     images: set[str] = set(gt_df["image_name"].unique())

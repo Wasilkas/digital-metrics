@@ -6,6 +6,7 @@ import pandas as pd
 
 from ..grouping import image_row_indices
 from ..types import PredictMatch
+from ..validation import normalize_image_ids, validate_dataframes, validate_iou, validate_option
 from .assignment import (
     MatchedPairs,
     assign_greedy,
@@ -64,6 +65,16 @@ def match_boxes(
     Returns:
         Dict mapping class name → list of PredictMatch objects.
     """
+    validate_iou(iou_threshold)
+    validate_option("matching_strategy", strategy, ("greedy", "iou_prior", "hungarian"))
+    validate_dataframes(preds_df, gt_df)
+    if split_image_names is not None:
+        gt_df, preds_df, scope = normalize_image_ids(
+            gt_df, preds_df, pd.DataFrame({"image_name": split_image_names})
+        )
+        split_image_names = scope["image_name"].tolist()
+    else:
+        gt_df, preds_df = normalize_image_ids(gt_df, preds_df)
     matches: dict[str, list[PredictMatch]] = {}
     preds_df, all_images = _resolve_matching_scope(gt_df, preds_df, split_image_names)
 
@@ -143,9 +154,9 @@ def _build_matches(
     pairs: MatchedPairs,
     iou_threshold: float,
     gt_labels: npt.NDArray[np.object_],
-    gt_indices: npt.NDArray[np.int64],
+    gt_indices: npt.NDArray[np.object_],
     pred_labels: npt.NDArray[np.object_],
-    pred_indices: npt.NDArray[np.int64],
+    pred_indices: npt.NDArray[np.object_],
     pred_confs: npt.NDArray[np.float64],
     *,
     cross_class_fp: bool,
@@ -172,25 +183,26 @@ def _build_matches(
         if pred_pos in pred_to_gt:
             gt_pos = pred_to_gt[pred_pos]
             gt_label = str(gt_labels[gt_pos])
-            gt_index = int(gt_indices[gt_pos])
+            gt_index = gt_indices[gt_pos]
             match_iou = float(iou_matrix[pred_pos, gt_pos])
         else:
             gt_label = "background"
             gt_index = -1
             if cross_class_fp and n_gts > 0:
-                best_gt_j = int(np.argmax(iou_matrix[pred_pos]))
+                cross_class_iou = np.where(gt_labels != pred_label, iou_matrix[pred_pos], -1.0)
+                best_gt_j = int(np.argmax(cross_class_iou))
                 best_iou = float(iou_matrix[pred_pos, best_gt_j])
                 closest_label = str(gt_labels[best_gt_j])
                 if best_iou >= iou_threshold and closest_label != pred_label:
                     gt_label = closest_label
-                    gt_index = int(gt_indices[best_gt_j])
+                    gt_index = gt_indices[best_gt_j]
                     match_iou = best_iou
 
         matches.setdefault(pred_label, []).append(
             PredictMatch(
                 pred_label=pred_label,
                 gt_label=gt_label,
-                pred_index=int(pred_indices[pred_pos]),
+                pred_index=pred_indices[pred_pos],
                 gt_index=gt_index,
                 confidence=float(pred_confs[pred_pos]),
                 iou=match_iou,
@@ -206,7 +218,7 @@ def _build_matches(
                 pred_label="background",
                 gt_label=gt_label,
                 pred_index=-1,
-                gt_index=int(gt_indices[gt_pos]),
+                gt_index=gt_indices[gt_pos],
                 confidence=0.0,
             )
         )
