@@ -3,6 +3,12 @@
 Generated from Conventional Commits. Curated notes through 0.5.3 are preserved
 in `docs/changelog-history.md`.
 
+## v0.6.1 (2026-10-05)
+
+### Bug Fixes
+
+- correct evaluation contracts backend counts and reporting (`659cf14`)
+
 ## v0.6.0 (2026-10-01)
 
 ### Bug Fixes
