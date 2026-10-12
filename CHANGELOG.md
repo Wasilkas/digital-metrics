@@ -3,6 +3,12 @@
 Generated from Conventional Commits. Curated notes through 0.5.3 are preserved
 in `docs/changelog-history.md`.
 
+## v0.7.0 (2026-10-12)
+
+### Features
+
+- expose fixed evaluation paired statistics and explicit rendering (`cb330a8`)
+
 ## v0.6.1 (2026-10-05)
 
 ### Bug Fixes
