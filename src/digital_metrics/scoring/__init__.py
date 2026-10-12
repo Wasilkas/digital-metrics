@@ -1,6 +1,6 @@
 """Metric computations: AP/mAP, Cohen's kappa, confidence search, confusion matrix."""
 
-from .ap import APMethod, compute_ap, compute_map
+from .ap import APMethod, PRObservation, build_pr_observations, compute_ap, compute_map
 from .confidence import (
     ConfidenceOptimization,
     find_best_confidences,
@@ -12,6 +12,8 @@ from .kappa import compute_kappa
 
 __all__ = [
     "APMethod",
+    "PRObservation",
+    "build_pr_observations",
     "ConfidenceOptimization",
     "compute_ap",
     "compute_kappa",

@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "task": "shared-extraction",
+  "scope": [
+    "src/digital_metrics/fixed.py",
+    "src/digital_metrics/scoring/ap.py",
+    "src/digital_metrics/comparison.py",
+    "src/digital_metrics/reporting/dashboard.py",
+    "src/digital_metrics/__init__.py",
+    "src/digital_metrics/scoring/__init__.py",
+    "src/digital_metrics/reporting/__init__.py",
+    "tests/test_shared_legacy_characterization.py",
+    "tests/test_shared_extraction.py",
+    "tests/test_shared_architecture.py",
+    "docs/plans/shared-extraction",
+    "docs/shared-evaluation.md",
+    "tests/fixtures/shared_ap_baseline.json"
+  ],
+  "impact": "modules",
+  "rules": "Library owns scientific arithmetic and rendering effects; caller owns eligibility, identity, workflow, SDK and publication policy. Legacy APIs remain unchanged.",
+  "modules": [
+    {
+      "id": "fixed",
+      "path": "src/digital_metrics/fixed.py",
+      "change": "add",
+      "responsibility": "Score supplied fixed/AP populations without application policy or IO",
+      "interface": "Additive typed result APIs; legacy defaults, failures, mutations and filenames retained.",
+      "layer": "Library computation",
+      "allowed_dependencies": [
+        "digital_metrics",
+        "Python standard library",
+        "existing scientific dependencies"
+      ],
+      "forbidden_dependencies": [
+        "clearml_yolo",
+        "hydra",
+        "clearml publication SDK"
+      ],
+      "effects": "No external IO; supplied values only.",
+      "contracts": [
+        "library-boundary"
+      ]
+    },
+    {
+      "id": "ap",
+      "path": "src/digital_metrics/scoring/ap.py",
+      "change": "modify",
+      "responsibility": "Own authoritative AP arithmetic and precision-recall observations",
+      "interface": "Additive typed result APIs; legacy defaults, failures, mutations and filenames retained.",
+      "layer": "Library computation",
+      "allowed_dependencies": [
+        "digital_metrics",
+        "Python standard library",
+        "existing scientific dependencies"
+      ],
+      "forbidden_dependencies": [
+        "clearml_yolo",
+        "hydra",
+        "clearml publication SDK"
+      ],
+      "effects": "No external IO; supplied values only.",
+      "contracts": [
+        "library-boundary"
+      ]
+    },
+    {
+      "id": "comparison",
+      "path": "src/digital_metrics/comparison.py",
+      "change": "add",
+      "responsibility": "Own paired statistical kernels and caller-selected BH families",
+      "interface": "Additive typed result APIs; legacy defaults, failures, mutations and filenames retained.",
+      "layer": "Library computation",
+      "allowed_dependencies": [
+        "digital_metrics",
+        "Python standard library",
+        "existing scientific dependencies"
+      ],
+      "forbidden_dependencies": [
+        "clearml_yolo",
+        "hydra",
+        "clearml publication SDK"
+      ],
+      "effects": "No external IO; supplied values only.",
+      "contracts": [
+        "library-boundary"
+      ]
+    },
+    {
+      "id": "reporting",
+      "path": "src/digital_metrics/reporting/dashboard.py",
+      "change": "modify",
+      "responsibility": "Own explicit artifact rendering and retain legacy dashboard behavior",
+      "interface": "Additive typed result APIs; legacy defaults, failures, mutations and filenames retained.",
+      "layer": "Library reporting",
+      "allowed_dependencies": [
+        "digital_metrics",
+        "Python standard library",
+        "existing scientific dependencies"
+      ],
+      "forbidden_dependencies": [
+        "clearml_yolo",
+        "hydra",
+        "clearml publication SDK"
+      ],
+      "effects": "Artifact writes and figure lifetime owned by reporting; other modules have no external IO.",
+      "contracts": [
+        "library-boundary"
+      ]
+    },
+    {
+      "id": "exports",
+      "path": "src/digital_metrics/__init__.py",
+      "change": "modify",
+      "responsibility": "Expose additive public APIs",
+      "interface": "Additive typed result APIs; legacy defaults, failures, mutations and filenames retained.",
+      "layer": "Library computation",
+      "allowed_dependencies": [
+        "digital_metrics",
+        "Python standard library",
+        "existing scientific dependencies"
+      ],
+      "forbidden_dependencies": [
+        "clearml_yolo",
+        "hydra",
+        "clearml publication SDK"
+      ],
+      "effects": "No external IO; supplied values only.",
+      "contracts": [
+        "library-boundary"
+      ]
+    },
+    {
+      "id": "scoring-exports",
+      "path": "src/digital_metrics/scoring/__init__.py",
+      "change": "modify",
+      "responsibility": "Expose AP observation builder",
+      "interface": "Additive typed result APIs; legacy defaults, failures, mutations and filenames retained.",
+      "layer": "Library computation",
+      "allowed_dependencies": [
+        "digital_metrics",
+        "Python standard library",
+        "existing scientific dependencies"
+      ],
+      "forbidden_dependencies": [
+        "clearml_yolo",
+        "hydra",
+        "clearml publication SDK"
+      ],
+      "effects": "No external IO; supplied values only.",
+      "contracts": [
+        "library-boundary"
+      ]
+    },
+    {
+      "id": "reporting-exports",
+      "path": "src/digital_metrics/reporting/__init__.py",
+      "change": "modify",
+      "responsibility": "Expose additive renderer",
+      "interface": "Additive typed result APIs; legacy defaults, failures, mutations and filenames retained.",
+      "layer": "Library computation",
+      "allowed_dependencies": [
+        "digital_metrics",
+        "Python standard library",
+        "existing scientific dependencies"
+      ],
+      "forbidden_dependencies": [
+        "clearml_yolo",
+        "hydra",
+        "clearml publication SDK"
+      ],
+      "effects": "No external IO; supplied values only.",
+      "contracts": [
+        "library-boundary"
+      ]
+    }
+  ],
+  "contracts": [
+    {
+      "id": "library-boundary",
+      "path": "tests/test_shared_architecture.py",
+      "status": "planned",
+      "rules": "Task modules cannot import consumer application, Hydra or ClearML; injected prohibited import fails.",
+      "check": "imports"
+    }
+  ],
+  "checks": [
+    {
+      "id": "imports",
+      "kind": "imports",
+      "command": "uv run --frozen --no-sync pytest -q tests/test_shared_architecture.py",
+      "expectation": "Scoped library imports and injected negative case pass.",
+      "result": {
+        "status": "passed",
+        "exit_code": 0,
+        "evidence": "docs/plans/shared-extraction/evidence-2026-10-12.md"
+      }
+    },
+    {
+      "id": "behavior",
+      "kind": "behavior",
+      "command": "uv run --frozen --no-sync pytest -q; uv run --frozen --no-sync pytest -q tests/test_shared_extraction.py tests/test_shared_architecture.py tests/test_shared_legacy_characterization.py",
+      "expectation": "Legacy and additive API characterization suites pass with optional skips documented.",
+      "result": {
+        "status": "passed",
+        "exit_code": 0,
+        "evidence": "docs/plans/shared-extraction/evidence-2026-10-12.md"
+      }
+    },
+    {
+      "id": "quality",
+      "kind": "behavior",
+      "command": "uv run --frozen --no-sync ruff check src tests; uv run --frozen --no-sync mypy src/",
+      "expectation": "Lint and strict typing pass.",
+      "result": {
+        "status": "passed",
+        "exit_code": 0,
+        "evidence": "docs/plans/shared-extraction/evidence-2026-10-12.md"
+      }
+    },
+    {
+      "id": "documentation",
+      "kind": "documentation",
+      "command": "uv run --frozen --no-sync pytest -q tests/test_shared_architecture.py -k documentation",
+      "expectation": "Changed Markdown local links resolve.",
+      "result": {
+        "status": "passed",
+        "exit_code": 0,
+        "evidence": "docs/plans/shared-extraction/evidence-2026-10-12.md"
+      }
+    }
+  ],
+  "documentation": "Add docs/shared-evaluation.md documenting populations, explicit artifacts and consumer policy boundary.",
+  "review": {
+    "status": "accepted",
+    "reviewer": "Fresh native agent integrated_review (read-only; ship verdict)",
+    "evidence": "docs/plans/shared-extraction/evidence-2026-10-12.md",
+    "reconciliation": "Parent inspected complete task-owned runtime, added tests/fixtures, modified configuration/docs and removed duplicate implementations against Git baselines. Application static-analysis/runtime/test/lockfile pre-existing edits excluded. Exact SDK ownership rules retained; all recorded checks passed; test/documentation scope and executable docs command reconciled."
+  }
+}

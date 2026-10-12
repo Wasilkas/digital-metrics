@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
@@ -18,6 +19,22 @@ from ..validation import normalize_image_ids, validate_dataframes, validate_opti
 _IOU_THRESHOLDS = [round(x, 2) for x in np.arange(0.50, 0.96, 0.05)]
 
 APMethod = Literal["interp", "continuous"]
+
+
+@dataclass(frozen=True)
+class PRObservation:
+    """AP50 observations over the unfiltered AP population, not an operating point."""
+
+    class_name: str
+    recall: list[float]
+    precision: list[float]
+    confidence: list[float]
+    tp: list[int]
+    fp: list[int]
+    gt_count: int
+    ap50: float | None
+    integration_method: str
+
 
 # Per-class GT boxes keyed by image, used inside compute_map.
 _GtByImg = dict[str, npt.NDArray[np.float32]]
@@ -146,14 +163,14 @@ def _assign_tp_fp(
     return tp, fp
 
 
-def compute_map(
+def _compute_map_with_observations(
     gt_df: pd.DataFrame,
     preds_df: pd.DataFrame,
     metrics: dict[str, Metrics],
     split_image_names: list[str] | None = None,
     method: APMethod = "continuous",
     strategy: MatchingStrategy = "greedy",
-) -> None:
+) -> list[PRObservation]:
     """Compute mAP50/75/50-95 per class and write into metrics in place.
 
     Args:
@@ -198,6 +215,7 @@ def compute_map(
         c: {t: float("nan") for t in _IOU_THRESHOLDS} for c in classes
     }
 
+    observations: list[PRObservation] = []
     for c in classes:
         gt_c = gt_df[gt_df["instance_label"] == c]
         pred_c = preds_df[preds_df["instance_label"] == c]
@@ -232,6 +250,20 @@ def compute_map(
             rec = tp_cum / max(npos, 1)
             prec = np.divide(tp_cum, (tp_cum + fp_cum + 1e-12))
             ap_per_class[c][thr] = compute_ap(rec, prec, method)
+            if thr == 0.5:
+                observations.append(
+                    PRObservation(
+                        class_name=c,
+                        recall=rec.tolist(),
+                        precision=prec.tolist(),
+                        confidence=pred_c["confidence"].astype(float).tolist(),
+                        tp=tp_cum.astype(int).tolist(),
+                        fp=fp_cum.astype(int).tolist(),
+                        gt_count=int(npos),
+                        ap50=ap_per_class[c][thr],
+                        integration_method=method,
+                    )
+                )
 
     for c in classes:
         if c in metrics:
@@ -244,3 +276,58 @@ def compute_map(
             m.ap50 = float("nan")
             m.ap75 = float("nan")
             m.ap50_95 = float("nan")
+
+    return observations
+
+
+def compute_map(
+    gt_df: pd.DataFrame,
+    preds_df: pd.DataFrame,
+    metrics: dict[str, Metrics],
+    split_image_names: list[str] | None = None,
+    method: APMethod = "continuous",
+    strategy: MatchingStrategy = "greedy",
+) -> None:
+    """Compute mAP50/75/50-95 per class and mutate supplied metrics in place.
+
+    Defaults, validation order, sorting, arithmetic and absent-class NaNs are
+    identical to the legacy API. Predictions are full, unfiltered AP inputs.
+    """
+    _compute_map_with_observations(gt_df, preds_df, metrics, split_image_names, method, strategy)
+
+
+def build_pr_observations(
+    gt_df: pd.DataFrame,
+    preds_df: pd.DataFrame,
+    *,
+    classes: list[str],
+    image_names: list[str],
+    matching_strategy: MatchingStrategy = "greedy",
+    ap_method: APMethod = "interp",
+) -> list[PRObservation]:
+    """Build AP50 observations using the same authoritative computation as compute_map.
+
+    Explicit image scope limits both populations. Classes absent from scoped
+    ground truth have no observations and unavailable AP50.
+    """
+    validate_option("ap_method", ap_method, ("interp", "continuous"))
+    validate_option("matching_strategy", matching_strategy, ("greedy", "iou_prior", "hungarian"))
+    validate_dataframes(preds_df, gt_df)
+    truth, predictions, scope = normalize_image_ids(
+        gt_df, preds_df, pd.DataFrame({"image_name": image_names})
+    )
+    truth = truth[truth["image_name"].isin(scope["image_name"])]
+    observations = _compute_map_with_observations(
+        truth, predictions, {}, scope["image_name"].tolist(), ap_method, matching_strategy
+    )
+    return _ordered_observations(observations, classes, ap_method)
+
+
+def _ordered_observations(
+    observations: list[PRObservation], classes: list[str], method: APMethod
+) -> list[PRObservation]:
+    by_class = {observation.class_name: observation for observation in observations}
+    return [
+        by_class.get(name, PRObservation(name, [], [], [], [], [], 0, None, method))
+        for name in classes
+    ]

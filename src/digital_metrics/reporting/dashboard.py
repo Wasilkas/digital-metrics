@@ -1,4 +1,8 @@
 import os
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from textwrap import wrap
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -69,6 +73,63 @@ def get_dashboards(
             figsize=(12, 8),
         )
 
+    devs, dtrk = _dashboard_frames(metrics, split_df)
+
+    logger.info("Saving results...")
+
+    if save_confusion_matrix and cm is not None:
+        cm_df = pd.DataFrame(cm, index=class_labels, columns=class_labels)
+        _write_literal_excel(cm_df, os.path.join(path, f"matrix_{suffix}.xlsx"))
+
+    if save_to_excel:
+        _write_literal_excel(devs, os.path.join(path, f"full_dashboard_{suffix}.xlsx"))
+        _write_literal_excel(dtrk, os.path.join(path, f"метрики_дтрк_{suffix}.xlsx"))
+
+    logger.info("Save complete.")
+    return devs, dtrk
+
+
+def plot_confidence_intervals(
+    metrics: dict[str, Metrics],
+    metric: str,
+    confidence_level: float = 0.95,
+    save_path: str | None = None,
+    figsize: tuple[int, int] = (10, 6),
+) -> tuple[Figure | None, Axes | None]:
+    """Plot bar chart with Wilson CI error bars for a metric across classes.
+
+    Args:
+        metrics: Per-class Metrics objects.
+        metric: One of "precision", "recall", "perebrak", "nedobrak".
+        confidence_level: Statistical coverage of the plotted Wilson intervals.
+        save_path: Path to save the PNG; if None, the plot is displayed.
+        figsize: Figure size in inches.
+
+    Returns:
+        (fig, ax) matplotlib objects, or (None, None) if metrics is empty.
+    """
+    fig, ax = _confidence_interval_figure(metrics, metric, confidence_level, figsize)
+    if fig is None:
+        return None, None
+
+    if save_path:
+        parent = os.path.dirname(save_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        plt.savefig(save_path, bbox_inches="tight", dpi=300)
+        logger.info(f"Confidence interval plot saved to {save_path}")
+        # Release the figure: get_dashboards renders several per run, and leaving
+        # them open leaks memory / trips matplotlib's ">20 figures" warning.
+        plt.close(fig)
+    else:
+        plt.show()
+
+    return fig, ax
+
+
+def _dashboard_frames(
+    metrics: dict[str, Metrics], split_df: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     metrics_df = _metrics_as_df(metrics)
     metrics_df["confidence"] = metrics_df["confidence"].apply(lambda x: round(x, 2))
 
@@ -125,39 +186,15 @@ def get_dashboards(
     devs = devs.loc[:, ~devs.columns.str.contains("^Unnamed")].sort_index()
     dtrk = dtrk.loc[:, ~dtrk.columns.str.contains("^Unnamed")].sort_index()
 
-    logger.info("Saving results...")
-
-    if save_confusion_matrix and cm is not None:
-        cm_df = pd.DataFrame(cm, index=class_labels, columns=class_labels)
-        _write_literal_excel(cm_df, os.path.join(path, f"matrix_{suffix}.xlsx"))
-
-    if save_to_excel:
-        _write_literal_excel(devs, os.path.join(path, f"full_dashboard_{suffix}.xlsx"))
-        _write_literal_excel(dtrk, os.path.join(path, f"метрики_дтрк_{suffix}.xlsx"))
-
-    logger.info("Save complete.")
     return devs, dtrk
 
 
-def plot_confidence_intervals(
+def _confidence_interval_figure(
     metrics: dict[str, Metrics],
     metric: str,
-    confidence_level: float = 0.95,
-    save_path: str | None = None,
-    figsize: tuple[int, int] = (10, 6),
+    confidence_level: float,
+    figsize: tuple[int, int],
 ) -> tuple[Figure | None, Axes | None]:
-    """Plot bar chart with Wilson CI error bars for a metric across classes.
-
-    Args:
-        metrics: Per-class Metrics objects.
-        metric: One of "precision", "recall", "perebrak", "nedobrak".
-        confidence_level: Statistical coverage of the plotted Wilson intervals.
-        save_path: Path to save the PNG; if None, the plot is displayed.
-        figsize: Figure size in inches.
-
-    Returns:
-        (fig, ax) matplotlib objects, or (None, None) if metrics is empty.
-    """
     calculate_confidence_interval(0, 0, confidence_level=confidence_level)
     if metric not in ("precision", "recall", "perebrak", "nedobrak"):
         raise ValueError(f"Unsupported metric: {metric!r}")
@@ -200,16 +237,110 @@ def plot_confidence_intervals(
     ax.grid(axis="y", linestyle="--", alpha=0.7)
     plt.tight_layout()
 
-    if save_path:
-        parent = os.path.dirname(save_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        plt.savefig(save_path, bbox_inches="tight", dpi=300)
-        logger.info(f"Confidence interval plot saved to {save_path}")
-        # Release the figure: get_dashboards renders several per run, and leaving
-        # them open leaks memory / trips matplotlib's ">20 figures" warning.
-        plt.close(fig)
-    else:
-        plt.show()
-
     return fig, ax
+
+
+@dataclass(frozen=True)
+class RenderedPlot:
+    """An explicit written plot, its caption and closed but inspectable figure."""
+
+    path: Path
+    caption: str | None
+    figure: Figure
+    axes: Axes
+
+
+@dataclass(frozen=True)
+class RenderedEvaluation:
+    """Dashboard frames and the actual destinations written by the renderer."""
+
+    dashboard: pd.DataFrame
+    dtrk_dashboard: pd.DataFrame
+    dashboard_path: Path | None
+    dtrk_dashboard_path: Path | None
+    confusion_matrix_path: Path | None
+    plots: dict[str, RenderedPlot]
+
+
+def render_evaluation(
+    metrics: dict[str, Metrics],
+    split_df: pd.DataFrame,
+    cm: npt.NDArray[np.int64] | None,
+    class_labels: list[str],
+    suffix: str = "default",
+    *,
+    save_to_excel: bool = True,
+    path: str = "metrics/",
+    save_confusion_matrix: bool = True,
+    artifact_paths: Mapping[str, Path] | None = None,
+    caption: str | None = None,
+) -> RenderedEvaluation:
+    """Render explicit artifacts, saving each plot once after caption annotation.
+
+    Destination keys are ``dashboard``, ``dtrk_dashboard``, ``confusion_matrix``
+    and ``recall``, ``precision``, ``perebrak``, ``nedobrak``. Unspecified paths
+    follow the legacy filenames under ``path``. Plot paths and captions are
+    returned even when Excel output is disabled. No interactive display occurs.
+    The caller owns artifact identity, publication and workbook annotations.
+    """
+    supplied = {} if artifact_paths is None else dict(artifact_paths)
+    allowed = {
+        "dashboard",
+        "dtrk_dashboard",
+        "confusion_matrix",
+        "recall",
+        "precision",
+        "perebrak",
+        "nedobrak",
+    }
+    unknown = set(supplied) - allowed
+    if unknown:
+        raise ValueError(f"Unknown artifact path keys: {sorted(unknown)}")
+    base = Path(path)
+    destinations = {
+        "dashboard": base / f"full_dashboard_{suffix}.xlsx",
+        "dtrk_dashboard": base / f"метрики_дтрк_{suffix}.xlsx",
+        "confusion_matrix": base / f"matrix_{suffix}.xlsx",
+        **{
+            metric: base / f"{metric}_confidence_intervals_{suffix}.png"
+            for metric in ("recall", "precision", "perebrak", "nedobrak")
+        },
+        **supplied,
+    }
+    dashboard, dtrk = _dashboard_frames(metrics, split_df)
+    plots: dict[str, RenderedPlot] = {}
+    for metric in ("recall", "precision", "perebrak", "nedobrak") if metrics else ():
+        figure, axes = _confidence_interval_figure(metrics, metric, 0.95, (12, 8))
+        assert figure is not None and axes is not None
+        destination = destinations[metric]
+        try:
+            if caption is not None:
+                wrapped = "\n".join(
+                    line for value in caption.splitlines() for line in wrap(value, width=100)
+                )
+                figure.suptitle(wrapped, y=1.03, va="bottom", fontsize=10, parse_math=False)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            figure.savefig(
+                destination,
+                bbox_inches="tight",
+                dpi=300,
+                metadata=None if caption is None else {"Model identity": caption},
+            )
+        finally:
+            plt.close(figure)
+        plots[metric] = RenderedPlot(destination, caption, figure, axes)
+    dashboard_path = destinations["dashboard"] if save_to_excel else None
+    dtrk_path = destinations["dtrk_dashboard"] if save_to_excel else None
+    matrix_path = (
+        destinations["confusion_matrix"] if save_confusion_matrix and cm is not None else None
+    )
+    for frame, workbook_path in ((dashboard, dashboard_path), (dtrk, dtrk_path)):
+        if workbook_path is not None:
+            workbook_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_literal_excel(frame, str(workbook_path))
+    if matrix_path is not None:
+        matrix_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_literal_excel(
+            pd.DataFrame(cm, index=class_labels, columns=class_labels), str(matrix_path)
+        )
+    return RenderedEvaluation(dashboard, dtrk, dashboard_path, dtrk_path, matrix_path, plots)

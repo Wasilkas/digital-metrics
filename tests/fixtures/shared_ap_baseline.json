@@ -1,0 +1,212 @@
+{
+  "revision": "7c6dfa98cc052ce0202f11655839078534182d77",
+  "ground_truth": [
+    {
+      "image_name": "a",
+      "instance_label": "x",
+      "bbox_x_tl": 0,
+      "bbox_y_tl": 0,
+      "bbox_x_br": 10,
+      "bbox_y_br": 10
+    },
+    {
+      "image_name": "a",
+      "instance_label": "x",
+      "bbox_x_tl": 4,
+      "bbox_y_tl": 0,
+      "bbox_x_br": 14,
+      "bbox_y_br": 10
+    },
+    {
+      "image_name": "b",
+      "instance_label": "y",
+      "bbox_x_tl": 0,
+      "bbox_y_tl": 0,
+      "bbox_x_br": 10,
+      "bbox_y_br": 10
+    },
+    {
+      "image_name": "c",
+      "instance_label": "x",
+      "bbox_x_tl": 0,
+      "bbox_y_tl": 0,
+      "bbox_x_br": 10,
+      "bbox_y_br": 10
+    }
+  ],
+  "predictions": [
+    {
+      "image_name": "a",
+      "instance_label": "x",
+      "bbox_x_tl": 2,
+      "bbox_y_tl": 0,
+      "bbox_x_br": 12,
+      "bbox_y_br": 10,
+      "confidence": 0.8
+    },
+    {
+      "image_name": "a",
+      "instance_label": "x",
+      "bbox_x_tl": 0,
+      "bbox_y_tl": 0,
+      "bbox_x_br": 10,
+      "bbox_y_br": 10,
+      "confidence": 0.8
+    },
+    {
+      "image_name": "a",
+      "instance_label": "x",
+      "bbox_x_tl": 4,
+      "bbox_y_tl": 0,
+      "bbox_x_br": 14,
+      "bbox_y_br": 10,
+      "confidence": 0.2
+    },
+    {
+      "image_name": "b",
+      "instance_label": "x",
+      "bbox_x_tl": 0,
+      "bbox_y_tl": 0,
+      "bbox_x_br": 10,
+      "bbox_y_br": 10,
+      "confidence": 0.9
+    },
+    {
+      "image_name": "empty",
+      "instance_label": "x",
+      "bbox_x_tl": 0,
+      "bbox_y_tl": 0,
+      "bbox_x_br": 10,
+      "bbox_y_br": 10,
+      "confidence": 0.8
+    },
+    {
+      "image_name": "c",
+      "instance_label": "x",
+      "bbox_x_tl": 0,
+      "bbox_y_tl": 0,
+      "bbox_x_br": 10,
+      "bbox_y_br": 10,
+      "confidence": 0.1
+    },
+    {
+      "image_name": "outside",
+      "instance_label": "y",
+      "bbox_x_tl": 0,
+      "bbox_y_tl": 0,
+      "bbox_x_br": 10,
+      "bbox_y_br": 10,
+      "confidence": 0.99
+    }
+  ],
+  "images": [
+    "a",
+    "b",
+    "c",
+    "empty"
+  ],
+  "results": {
+    "continuous:greedy": {
+      "x": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "y": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "absent": [
+        null,
+        null,
+        null
+      ]
+    },
+    "continuous:iou_prior": {
+      "x": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "y": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "absent": [
+        null,
+        null,
+        null
+      ]
+    },
+    "continuous:hungarian": {
+      "x": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "y": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "absent": [
+        null,
+        null,
+        null
+      ]
+    },
+    "interp:greedy": {
+      "x": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "y": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "absent": [
+        null,
+        null,
+        null
+      ]
+    },
+    "interp:iou_prior": {
+      "x": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "y": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "absent": [
+        null,
+        null,
+        null
+      ]
+    },
+    "interp:hungarian": {
+      "x": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "y": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "absent": [
+        null,
+        null,
+        null
+      ]
+    }
+  }
+}
